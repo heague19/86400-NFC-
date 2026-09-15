@@ -1,0 +1,44 @@
+{
+  "expo": {
+    "name": "86400",
+    "slug": "nfc-link-manager",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#000000"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.palyuksa.palyuksa",
+      "icon": "./assets/icon.png",
+      "infoPlist": {
+        "NFCReaderUsageDescription": "NFC 태그에 링크를 쓰고 읽기 위해 NFC를 사용합니다."
+      }
+    },
+    "android": {
+      "package": "com.palyuksa.palyuksa",
+      "permissions": ["android.permission.NFC"],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#111114"
+      }
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "react-native-nfc-manager",
+        {
+          "nfcPermission": "NFC 태그에 링크를 쓰고 읽기 위해 NFC를 사용합니다.",
+          "selectIdentifiers": ["D2760000850101"]
+        }
+      ]
+    ]
+  }
+}

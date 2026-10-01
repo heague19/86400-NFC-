@@ -31,3 +31,10 @@ yarn-error.*
 # env / secrets (AGENTS.md: 민감정보 커밋 금지)
 .env
 .env.*
+
+# Claude Code (settings.json은 팀 공용 설정이라 커밋)
+.claude/settings.local.json
+/CLAUDE.md
+
+docs/memo.txt
+journey-into-86400-NFC-.md

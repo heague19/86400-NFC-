@@ -24,7 +24,7 @@ export function HomeScreen({ navigation }: Props) {
         <Text style={AppText.titleLarge}>NFC 태그에 원하는 링크를 저장하세요</Text>
         <View style={{ height: AppSpacing.sm }} />
         <Text style={[AppText.bodyMedium, styles.lead]}>
-          Instagram, GitHub, LinkedIn, Portfolio 등 다양한 링크를 NFC 태그에 담아보세요.
+          Instagram, GitHub, LinkedIn 등 다양한 링크를 NFC 태그에 담아보세요.
         </Text>
 
         <View style={{ height: AppSpacing.sectionGap }} />

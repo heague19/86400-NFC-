@@ -1,5 +1,5 @@
 // 태그 확인 화면 — 시안 08_태그확인 / 08_태그확인_2
-// 읽어온 태그의 URL·정보 표시 + 동작(열기/다시쓰기/복사)
+// 읽어온 태그의 URL·정보 표시 + 동작(열기/복사)
 //
 // TagRead 에서 읽어낸 실제 태그 값(URL·용량·쓰기가능)을 받아 표시한다.
 // capacity 가 없으면 NTAG213 기본값(144byte)으로 폴백.
@@ -27,7 +27,7 @@ function InfoItem({ label, value }: { label: string; value: string }) {
   );
 }
 
-/** 하단 동작 목록 (시안: OPEN URL / REWRITE / COPY) */
+/** 하단 동작 목록 (OPEN URL / COPY) */
 function ActionRow({ label, onPress }: { label: string; onPress: () => void }) {
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [pressed && styles.actionPressed]}>
@@ -36,7 +36,7 @@ function ActionRow({ label, onPress }: { label: string; onPress: () => void }) {
   );
 }
 
-export function TagInfoScreen({ route, navigation }: Props) {
+export function TagInfoScreen({ route }: Props) {
   const { url, linkTypeId, writable, capacity } = route.params;
   // 쓰기 흐름: linkTypeId 를 그대로 받음
   // 읽기 흐름: linkTypeId 가 없으므로 URL 도메인으로 추론
@@ -55,10 +55,6 @@ export function TagInfoScreen({ route, navigation }: Props) {
     } else {
       Alert.alert('링크 열기', '이 링크를 열 수 있는 앱이 없습니다.');
     }
-  };
-
-  const onRewrite = () => {
-    navigation.navigate('LinkTypeSelect');
   };
 
   const onCopy = () => {
@@ -104,7 +100,6 @@ export function TagInfoScreen({ route, navigation }: Props) {
 
         <View style={{ height: AppSpacing.xxl }} />
         <ActionRow label="OPEN URL" onPress={onOpenUrl} />
-        <ActionRow label="REWRITE" onPress={onRewrite} />
         <ActionRow label="COPY" onPress={onCopy} />
       </ScrollView>
     </SafeAreaView>

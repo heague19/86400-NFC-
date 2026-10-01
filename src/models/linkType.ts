@@ -66,22 +66,6 @@ export const LINK_TYPES: LinkType[] = [
     iconName: 'github',
   },
   {
-    id: 'linktree',
-    label: 'Linktree',
-    inputMode: 'fullUrl',
-    placeholder: 'linktr.ee/username',
-    description: 'Linktree URL을 입력합니다.',
-    iconName: 'linktree',
-  },
-  {
-    id: 'portfolio',
-    label: 'Portfolio',
-    inputMode: 'fullUrl',
-    placeholder: 'my-portfolio.com',
-    description: '포트폴리오 또는 개인 웹사이트 URL을 입력합니다.',
-    iconName: 'portfolio',
-  },
-  {
     id: 'custom',
     label: '직접 입력',
     inputMode: 'fullUrl',
@@ -111,7 +95,6 @@ const HOST_PATTERNS: Array<{ id: string; hosts: string[] }> = [
   { id: 'tiktok', hosts: ['tiktok.com'] },
   { id: 'linkedin', hosts: ['linkedin.com', 'lnkd.in'] },
   { id: 'github', hosts: ['github.com', 'github.io'] },
-  { id: 'linktree', hosts: ['linktr.ee', 'linktree.com'] },
 ];
 
 export function detectLinkTypeFromUrl(url: string): LinkType | undefined {

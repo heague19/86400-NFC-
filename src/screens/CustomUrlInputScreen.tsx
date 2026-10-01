@@ -1,5 +1,5 @@
 // 커스텀 URL 입력 화면 — Flutter custom_url_input_screen.dart 이식본
-// LinkedIn / GitHub / Linktree / Portfolio / 직접입력 공용
+// LinkedIn / GitHub / 직접입력 공용
 
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import React, { useMemo, useState } from 'react';

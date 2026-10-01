@@ -10,8 +10,6 @@ export const LINK_TYPE_ICONS: Record<string, ImageSourcePropType> = {
   instagram: require('../assets/type_instagram.png'),
   linkedin: require('../assets/type_linkedin.png'),
   github: require('../assets/type_github.png'),
-  linktree: require('../assets/type_linktree.png'),
-  portfolio: require('../assets/type_portfolio.png'),
   custom: require('../assets/type_link.png'),
 };
 

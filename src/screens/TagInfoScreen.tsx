@@ -5,6 +5,7 @@
 // capacity 가 없으면 NTAG213 기본값(144byte)으로 폴백.
 
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
+import * as Clipboard from 'expo-clipboard';
 import React from 'react';
 import { Alert, Image, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -57,9 +58,12 @@ export function TagInfoScreen({ route }: Props) {
     }
   };
 
-  const onCopy = () => {
-    // expo-clipboard 미설치 상태 — 설치 후 연결 예정
-    Alert.alert('복사', 'URL 복사 기능은 다음 단계에서 연결됩니다.');
+  const onCopy = async () => {
+    const copied = await Clipboard.setStringAsync(url).catch(() => false);
+    Alert.alert(
+      copied ? '주소 복사' : '복사 실패',
+      copied ? 'URL을 클립보드에 복사했습니다.' : 'URL을 복사하지 못했습니다. 다시 시도해 주세요.',
+    );
   };
 
   return (

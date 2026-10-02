@@ -5,6 +5,7 @@
 // ⚠️ 에뮬레이터에는 NFC 하드웨어가 없어 "미지원" 분기만 확인 가능 — 실기기 필요.
 
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
+import * as Clipboard from 'expo-clipboard';
 import React, { useEffect, useState } from 'react';
 import { Alert, Image, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -92,9 +93,13 @@ export function TagReadScreen({ navigation }: Props) {
     }
   };
 
-  /** U6 — 길게 누르면 URL 복사 (expo-clipboard 미설치 상태) */
-  const onCopy = (url: string) => {
-    Alert.alert('주소 복사', url);
+  /** U6 — 길게 누르면 URL 복사 */
+  const onCopy = async (url: string) => {
+    const copied = await Clipboard.setStringAsync(url).catch(() => false);
+    Alert.alert(
+      copied ? '주소 복사' : '복사 실패',
+      copied ? 'URL을 클립보드에 복사했습니다.' : 'URL을 복사하지 못했습니다. 다시 시도해 주세요.',
+    );
   };
 
   /** 확인 후 상세 화면으로 — 태그가 알려준 실제 값을 넘긴다 */
@@ -159,7 +164,7 @@ export function TagReadScreen({ navigation }: Props) {
                         <Text style={styles.linkTitle}>{t?.label ?? hostOf(u)}</Text>
                         {i === 0 ? (
                           <View style={styles.primaryBadge}>
-                            <Text style={styles.primaryBadgeText}>대표</Text>
+                            <Text style={styles.primaryBadgeText}>탭하면 이 링크가 열립니다</Text>
                           </View>
                         ) : null}
                       </View>
@@ -254,10 +259,10 @@ const styles = StyleSheet.create({
   linkCardPressed: { backgroundColor: AppColors.backgroundSubtle },
   linkIcon: { width: 38, height: 38, borderRadius: 9 },
   linkTextCol: { flex: 1, marginLeft: 12, marginRight: AppSpacing.sm },
-  linkTitleRow: { flexDirection: 'row', alignItems: 'center' },
+  linkTitleRow: { flexDirection: 'column', alignItems: 'flex-start' },
   linkTitle: { ...AppText.titleMedium },
   primaryBadge: {
-    marginLeft: AppSpacing.sm,
+    marginTop: AppSpacing.xs,
     backgroundColor: AppColors.primary,
     borderRadius: AppRadius.badge,
     paddingHorizontal: 8,

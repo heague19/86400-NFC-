@@ -19,7 +19,7 @@ export function HomeScreen({ navigation }: Props) {
         <Image source={APP_LOGO.black} style={styles.logo} resizeMode="contain" />
 
         <View style={{ height: AppSpacing.lg }} />
-        <Text style={AppText.headlineLarge}>NFC Link Writer</Text>
+        <Text style={AppText.headlineLarge}>86400</Text>
         <View style={{ height: AppSpacing.sm }} />
         <Text style={AppText.titleLarge}>NFC 태그에 원하는 링크를 저장하세요</Text>
         <View style={{ height: AppSpacing.sm }} />
@@ -38,17 +38,17 @@ export function HomeScreen({ navigation }: Props) {
 
         <View style={{ height: AppSpacing.sectionGap }} />
         <AppActionCard
-          icon={APP_ICONS.edit}
-          title="NFC 태그 만들기"
-          description="새로운 링크를 NFC 태그에 저장할 준비를 합니다."
-          onPress={() => navigation.navigate('LinkTypeSelect')}
+          icon={APP_ICONS.nfc}
+          title="링크 보기"
+          description="태그에 담긴 링크를 확인합니다."
+          onPress={() => navigation.navigate('TagRead')}
         />
         <View style={{ height: AppSpacing.itemGap }} />
         <AppActionCard
-          icon={APP_ICONS.nfc}
-          title="NFC 태그 읽기"
-          description="기존 NFC 태그의 링크를 확인합니다."
-          onPress={() => navigation.navigate('TagRead')}
+          icon={APP_ICONS.edit}
+          title="링크 편집"
+          description="태그에 담을 링크를 편집합니다."
+          onPress={() => navigation.navigate('LinkEdit')}
         />
       </ScrollView>
     </SafeAreaView>

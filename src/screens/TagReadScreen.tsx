@@ -85,11 +85,10 @@ export function TagReadScreen({ navigation }: Props) {
 
   /** U6 — 탭하면 브라우저로 열기 */
   const onOpen = async (url: string) => {
-    const ok = await Linking.canOpenURL(url).catch(() => false);
-    if (ok) {
-      Linking.openURL(url).catch(() => {});
-    } else {
-      Alert.alert('링크 열기', '이 링크를 열 수 있는 앱이 없습니다.');
+    try {
+      await Linking.openURL(url);
+    } catch {
+      Alert.alert('링크 열기', '링크를 열지 못했습니다. 다시 시도해 주세요.');
     }
   };
 

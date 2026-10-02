@@ -50,11 +50,10 @@ export function TagInfoScreen({ route }: Props) {
   const percent = Math.round(Math.min(used / total, 1) * 100);
 
   const onOpenUrl = async () => {
-    const ok = await Linking.canOpenURL(url);
-    if (ok) {
-      Linking.openURL(url);
-    } else {
-      Alert.alert('링크 열기', '이 링크를 열 수 있는 앱이 없습니다.');
+    try {
+      await Linking.openURL(url);
+    } catch {
+      Alert.alert('링크 열기', '링크를 열지 못했습니다. 다시 시도해 주세요.');
     }
   };
 

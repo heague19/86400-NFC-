@@ -10,6 +10,8 @@
 
 import { Platform } from 'react-native';
 import NfcManager, { Ndef, NfcErrorIOS, NfcTech, NdefStatus } from 'react-native-nfc-manager';
+import type { NdefRecord } from 'react-native-nfc-manager';
+import { isValidHttpUrl } from '../utils/urlNormalizer';
 
 /** feature-spec.md "4. Error Handling Specification" 의 에러 케이스 */
 export type NfcFailureReason =
@@ -17,6 +19,7 @@ export type NfcFailureReason =
   | 'disabled'         // Android 설정에서 NFC 꺼짐
   | 'not_ndef'         // NDEF 미지원 태그
   | 'read_only'        // 읽기 전용/잠긴 태그
+  | 'status_unknown'   // 태그 상태/용량 확인 실패
   | 'capacity'         // 태그 용량 초과
   | 'no_url'           // 태그에 URL 레코드 없음
   | 'cancelled'        // 사용자 취소 / 세션 종료
@@ -48,6 +51,7 @@ const MESSAGES: Record<NfcFailureReason, string> = {
   disabled: 'NFC가 꺼져 있습니다. 설정에서 NFC를 켠 뒤 다시 시도하세요.',
   not_ndef: '이 태그는 URL 저장 형식(NDEF)을 지원하지 않습니다. 다른 태그를 사용하세요.',
   read_only: '이 태그는 읽기 전용이라 수정할 수 없습니다.',
+  status_unknown: '태그 상태를 확인할 수 없습니다. 태그를 떼었다가 다시 대고 시도해주세요.',
   capacity: 'URL이 태그 용량보다 커서 저장할 수 없습니다. 더 짧은 URL을 쓰거나 용량이 큰 태그가 필요합니다.',
   no_url: '태그에서 URL을 찾지 못했습니다.',
   cancelled: 'NFC 작업이 취소되었습니다.',
@@ -90,8 +94,8 @@ async function withNdefSession<T>(
   alertMessage: string,
   work: () => Promise<T>,
 ): Promise<T> {
-  await NfcManager.requestTechnology(NfcTech.Ndef, { alertMessage });
   try {
+    await NfcManager.requestTechnology(NfcTech.Ndef, { alertMessage });
     return await work();
   } finally {
     // 취소 실패는 무시 — 원래 작업 결과/에러를 덮어쓰지 않는다
@@ -114,19 +118,51 @@ async function ensureReady(): Promise<NfcFailureReason | null> {
   return null;
 }
 
+/** Android는 내부 조회 오류도 NotSupported/capacity=0으로 반환한다. 우회하지 않는다. */
+async function getCheckedNdefStatus() {
+  const status = await NfcManager.ndefHandler.getNdefStatus().catch(() => null);
+  if (status?.status === NdefStatus.NotSupported && Platform.OS === 'ios') return status;
+  if (!status ||
+      (status.status !== NdefStatus.ReadWrite && status.status !== NdefStatus.ReadOnly) ||
+      !Number.isSafeInteger(status.capacity) || status.capacity <= 0) return null;
+  return status;
+}
+
+/** Native type=byte[]; Android id=hex 문자열, iOS id=byte[]. 모든 필드와 순서 유지. */
+function encodeNativeRecords(records: Array<Omit<NdefRecord, 'id'> & { id?: number[] | string }>) {
+  return Ndef.encodeMessage(records.map((record) => {
+    const type = typeof record.type === 'string' ? record.type : Ndef.util.bytesToString(record.type);
+    // type 디코딩이 원래 바이트를 바꾸면 검증 실패로 처리한다.
+    if (typeof type !== 'string' || (Array.isArray(record.type) &&
+        Ndef.util.bytesToHexString(Ndef.util.stringToBytes(type)) !==
+        Ndef.util.bytesToHexString(record.type))) throw new Error('Invalid NDEF type');
+    const nativeId = record.id;
+    if (typeof nativeId === 'string' && !/^(?:[0-9a-f]{2})*$/i.test(nativeId)) {
+      throw new Error('Invalid NDEF id');
+    }
+    const id = typeof nativeId === 'string'
+      ? (nativeId.match(/../g) ?? []).map((byte) => parseInt(byte, 16))
+      : nativeId ?? [];
+    return { ...record, type, id };
+  }));
+}
+
 /** NDEF 레코드 배열에서 URL 추출 (URI 레코드 우선, 없으면 텍스트에서 탐색) */
 function extractUrls(records: Array<{ tnf?: number; type?: unknown; payload?: unknown }>): string[] {
   const urls: string[] = [];
 
   const push = (u: string | null | undefined) => {
     const v = (u ?? '').trim();
-    if (v && !urls.includes(v)) urls.push(v);
+    if (isValidHttpUrl(v) && !urls.includes(v)) urls.push(v);
   };
 
   // URI 레코드를 순서대로 수집 — NDEF 첫 레코드가 대표 링크다
   for (const record of records) {
     try {
       if (Ndef.isType(record as never, Ndef.TNF_WELL_KNOWN, Ndef.RTD_URI)) {
+        // ndef-lib는 잘못된 UTF-8을 null 문자열로 이어붙인다 (예: https://null).
+        const payload = record.payload as number[];
+        decodeURIComponent(payload.slice(1).map((b) => `%${b.toString(16).padStart(2, '0')}`).join(''));
         push(Ndef.uri.decodePayload(record.payload as never));
       }
     } catch {
@@ -174,17 +210,16 @@ export const NfcService = {
     try {
       return await withNdefSession('태그에 링크를 쓰는 중입니다.\n휴대폰 뒷면을 태그에 대주세요.', async () => {
         // 태그 상태 확인 — 쓰기 가능 여부와 실제 용량을 먼저 본다
-        const status = await NfcManager.ndefHandler.getNdefStatus().catch(() => null);
-        if (status) {
-          if (status.status === NdefStatus.NotSupported) return fail('not_ndef');
-          if (status.status === NdefStatus.ReadOnly) return fail('read_only');
-        }
+        const status = await getCheckedNdefStatus();
+        if (!status) return fail('status_unknown');
+        if (status.status === NdefStatus.NotSupported) return fail('not_ndef');
+        if (status.status === NdefStatus.ReadOnly) return fail('read_only');
 
         const bytes = Ndef.encodeMessage(urls.map((u) => Ndef.uriRecord(u)));
         if (!bytes) return fail('failed');
 
         // 하드코딩된 144byte 대신 태그가 알려준 실제 용량으로 검사
-        if (status?.capacity && bytes.length > status.capacity) {
+        if (bytes.length > status.capacity) {
           return fail('capacity');
         }
 
@@ -193,12 +228,13 @@ export const NfcService = {
         // HANDOFF.md §5.7 — 쓰기 API가 성공을 반환해도 부분 기록 가능성이 있으므로
         // 같은 세션에서 즉시 다시 읽어 방금 쓴 내용과 바이트 단위로 대조한다.
         // "저장됨"이라고 말하는 시점이 실제로 검증된 시점이 되도록.
-        const verifyTag = await NfcManager.getTag().catch(() => null);
-        const verifyRecords = verifyTag?.ndefMessage;
-        const verifiedUrls = verifyRecords ? extractUrls(verifyRecords as never) : [];
-        const matches =
-          verifiedUrls.length === urls.length && verifiedUrls.every((u, i) => u === urls[i]);
-        if (!matches) {
+        try {
+          const verifyTag = await NfcManager.ndefHandler.getNdefMessage();
+          const verifiedBytes = encodeNativeRecords(verifyTag?.ndefMessage ?? []);
+          if (verifiedBytes.length !== bytes.length ||
+              !verifiedBytes.every((byte, i) => byte === bytes[i])) return fail('verify_mismatch');
+        } catch {
+          // 이미 썼으므로 재읽기/직렬화 오류도 기록 검증 실패로 처리한다.
           return fail('verify_mismatch');
         }
 
@@ -224,8 +260,10 @@ export const NfcService = {
 
     try {
       return await withNdefSession('태그를 읽는 중입니다.\n휴대폰 뒷면을 태그에 대주세요.', async () => {
+        const status = await getCheckedNdefStatus();
+        if (!status) return fail('status_unknown');
+        if (status.status === NdefStatus.NotSupported) return fail('not_ndef');
         const tag = await NfcManager.getTag();
-        const status = await NfcManager.ndefHandler.getNdefStatus().catch(() => null);
 
         const records = tag?.ndefMessage;
         if (!records || records.length === 0) {
@@ -246,8 +284,8 @@ export const NfcService = {
           ok: true,
           url,
           urls,
-          capacity: status?.capacity ?? tag?.maxSize,
-          writable: status ? status.status === NdefStatus.ReadWrite : undefined,
+          capacity: status.capacity,
+          writable: status.status === NdefStatus.ReadWrite,
           message: '태그를 읽었습니다.',
         };
       });

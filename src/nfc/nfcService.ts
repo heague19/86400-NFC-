@@ -86,6 +86,8 @@ function classifyError(err: unknown): NfcFailureReason {
   return 'failed';
 }
 
+let pendingNdefCleanup: Promise<void> | undefined;
+
 /**
  * NFC 세션을 열고 작업을 수행한 뒤 반드시 닫는다.
  * 세션을 안 닫으면 다음 스캔이 먹히지 않으므로 finally 로 보장한다.
@@ -93,13 +95,32 @@ function classifyError(err: unknown): NfcFailureReason {
 async function withNdefSession<T>(
   alertMessage: string,
   work: () => Promise<T>,
+  signal?: AbortSignal,
 ): Promise<T> {
+  // Android 취소는 태그 이벤트 등록 해제까지 비동기로 끝난다. 다음 요청은 그 뒤에 연다.
+  await pendingNdefCleanup;
+  if (signal?.aborted) throw new Error('cancelled');
+  let cleanup: Promise<void> | undefined;
+  const cancel = () => {
+    if (!cleanup) {
+      // 이 요청의 취소와 finally가 같은 정리를 공유해, 늦은 결과가 다음 세션을 닫지 않는다.
+      cleanup = NfcManager.cancelTechnologyRequest().catch(() => {});
+      pendingNdefCleanup = cleanup;
+    }
+    return cleanup;
+  };
+  const onAbort = () => { void cancel(); };
+  signal?.addEventListener('abort', onAbort);
   try {
     await NfcManager.requestTechnology(NfcTech.Ndef, { alertMessage });
-    return await work();
+    if (signal?.aborted) throw new Error('cancelled');
+    const result = await work();
+    if (signal?.aborted) throw new Error('cancelled');
+    return result;
   } finally {
+    signal?.removeEventListener('abort', onAbort);
     // 취소 실패는 무시 — 원래 작업 결과/에러를 덮어쓰지 않는다
-    await NfcManager.cancelTechnologyRequest().catch(() => {});
+    await cancel();
   }
 }
 
@@ -253,8 +274,8 @@ export const NfcService = {
     return this.writeUrls([url]);
   },
 
-  /** NFC 태그에서 URL 읽기 */
-  async readUrl(): Promise<NfcReadResult> {
+  /** NFC 태그에서 URL 읽기. 첫 읽기 화면 이탈은 해당 요청의 signal로 취소한다. */
+  async readUrl(signal?: AbortSignal): Promise<NfcReadResult> {
     try {
       const notReady = await ensureReady();
       if (notReady) return fail(notReady);
@@ -266,7 +287,7 @@ export const NfcService = {
         if (!tag) return fail('failed');
 
         const records = tag?.ndefMessage;
-        if (!records || records.length === 0) {
+        if (!records || records.length === 0 || records.every((record) => record.tnf === Ndef.TNF_EMPTY)) {
           // 기존 읽기 화면의 no_url 처리를 유지하면서 편집은 빈 태그로 시작할 수 있다.
           return {
             ...fail('no_url'),
@@ -294,9 +315,9 @@ export const NfcService = {
           writable: status.status === NdefStatus.ReadWrite,
           message: '태그를 읽었습니다.',
         };
-      });
+      }, signal);
     } catch (err) {
-      const reason = classifyError(err);
+      const reason = signal?.aborted ? 'cancelled' : classifyError(err);
       return { ok: false, reason, message: MESSAGES[reason] };
     }
   },

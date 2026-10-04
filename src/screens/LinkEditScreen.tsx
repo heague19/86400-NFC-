@@ -22,12 +22,13 @@ import type { RootStackParamList } from '@/navigation';
 type Props = NativeStackScreenProps<RootStackParamList, 'LinkEdit'>;
 
 export function LinkEditScreen({ navigation, route }: Props) {
-  const { links, capacity, replaceFromTag, clear, removeLink, setPrimary } = useLinkWriter();
+  const { links, replaceFromTag, clear, removeLink, setPrimary } = useLinkWriter();
   const [ready, setReady] = useState(false);
   const [reading, setReading] = useState(false);
   const [readError, setReadError] = useState<string | null>(null);
   const readRequest = useRef(0);
   const readPending = useRef(false);
+  const readCancellation = useRef<AbortController | null>(null);
   const mounted = useRef(false);
   const [writing, setWriting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -35,13 +36,15 @@ export function LinkEditScreen({ navigation, route }: Props) {
   const onRead = useCallback(async () => {
     if (readPending.current || !navigation.isFocused()) return;
     const request = ++readRequest.current;
+    const cancellation = new AbortController();
+    readCancellation.current = cancellation;
     readPending.current = true;
     setReady(false);
     setReading(true);
     setReadError(null);
     clear(); // 읽기 전 이전 태그의 목록과 용량을 사용할 수 없게 한다.
     try {
-      const result = await NfcService.readUrl();
+      const result = await NfcService.readUrl(cancellation.signal);
       if (!mounted.current || request !== readRequest.current || !navigation.isFocused()) return;
       const urls = result.ok
         ? result.urls ?? (result.url ? [result.url] : undefined)
@@ -62,6 +65,7 @@ export function LinkEditScreen({ navigation, route }: Props) {
     } finally {
       if (mounted.current && request === readRequest.current) {
         readPending.current = false;
+        readCancellation.current = null;
         setReading(false);
       }
     }
@@ -72,6 +76,8 @@ export function LinkEditScreen({ navigation, route }: Props) {
     const unsubscribe = navigation.addListener('blur', () => {
       ++readRequest.current;
       if (readPending.current) {
+        readCancellation.current?.abort();
+        readCancellation.current = null;
         readPending.current = false;
         setReading(false);
         setReadError('태그 읽기가 중단되었습니다. 다시 읽어주세요.');
@@ -97,6 +103,8 @@ export function LinkEditScreen({ navigation, route }: Props) {
     return () => {
       mounted.current = false;
       ++readRequest.current;
+      if (readPending.current) readCancellation.current?.abort();
+      readCancellation.current = null;
       readPending.current = false;
       unsubscribe();
     };
@@ -104,8 +112,8 @@ export function LinkEditScreen({ navigation, route }: Props) {
 
   const urls = links.map((l) => l.normalizedUrl);
   const usedBytes = NdefSize.estimateMessageBytes(urls);
-  // 실측 용량을 입력 화면 복귀에도 유지한다. 전체 폴백 정리는 4단계에서 처리한다.
-  const totalCapacity = capacity ?? NdefSize.maxBytes;
+  // 실측 용량은 Context에 보존한다. 게이지/초과 판정에 연결하는 작업은 4-1에서 처리한다.
+  const totalCapacity = NdefSize.maxBytes;
   const overCapacity = usedBytes > totalCapacity;
 
   const onAddLink = () => {

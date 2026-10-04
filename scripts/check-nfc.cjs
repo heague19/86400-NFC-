@@ -171,14 +171,22 @@ async function run(settings = {}, read = false, urls = ['https://example.com']) 
     originalUrls, 'Read keeps original URL strings, record order and duplicate records');
   const textUrls = ['https://example.com/A?utm_source=other&token=A~B', 'https://example.com/A?utm_source=other&token=A~B'];
   assert.deepEqual((await run({ records: toNative(textUrls.map((url) => Ndef.textRecord(url))) }, true)).urls, textUrls);
-  for (const writable of [true, false]) {
-    const empty = await run({ records: [], status: { status: writable ? 2 : 3, capacity: 137 } }, true);
-    assert.equal(empty.reason, 'no_url');
-    assert.deepEqual(empty.urls, []);
-    assert.equal(empty.capacity, 137);
-    assert.equal(empty.writable, writable);
+  const emptyRecord = { tnf: Ndef.TNF_EMPTY, type: [], id: '', payload: [] };
+  for (const records of [[], [emptyRecord], [emptyRecord, emptyRecord]]) {
+    for (const writable of [true, false]) {
+      const empty = await run({ records, status: { status: writable ? 2 : 3, capacity: 137 } }, true);
+      assert.equal(empty.reason, 'no_url');
+      assert.deepEqual(empty.urls, []);
+      assert.equal(empty.capacity, 137);
+      assert.equal(empty.writable, writable);
+    }
   }
-  assert.equal((await run({ tagNull: true }, true)).reason, 'failed', 'A missing tag is not a blank tag');
+  const missing = await run({ tagNull: true }, true);
+  assert.equal(missing.ok, false);
+  assert.equal(missing.reason, 'failed', 'A missing tag is not a blank tag');
+  assert.equal(missing.urls, undefined);
+  assert.equal(missing.capacity, undefined, 'Failed tag lookup must not supply blank-tag capacity');
+  assert.equal(missing.writable, undefined);
   const invalid = await run({ records: [malformed] }, true);
   assert.equal(invalid.reason, 'no_url');
   assert.equal(invalid.urls, undefined, 'Invalid nonempty records must not masquerade as a blank tag');
@@ -191,5 +199,5 @@ async function run(settings = {}, read = false, urls = ['https://example.com']) 
     assert.deepEqual(events, [], 'Unavailable NFC must not open a session');
   }
   console.log('PASS: native fields/ids, duplicate/order/byte comparison, fresh read/errors, status fail-closed, malformed UTF-8, session cleanup');
-  console.log('PASS: read URL strings/order/duplicates, blank writable/read-only metadata, missing/invalid tag distinction, unavailable NFC');
+  console.log('PASS: read URL strings/order/duplicates, []/TNF_EMPTY writable/read-only metadata, null tag failure without capacity, missing/invalid tag distinction, unavailable NFC');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

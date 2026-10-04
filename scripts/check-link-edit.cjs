@@ -90,7 +90,7 @@ let writes = [];
 let readResult;
 const service = { NfcService: {
   isSupported: async () => true,
-  readUrl: async () => { ++reads; return typeof readResult === 'function' ? readResult() : readResult; },
+  readUrl: async (signal) => { ++reads; return typeof readResult === 'function' ? readResult(signal) : readResult; },
   writeUrls: async (urls) => { writes.push(urls); return { ok: true, message: 'saved' }; },
 } };
 const placeholders = (...names) => Object.fromEntries(names.map((name) => [name, name]));
@@ -211,7 +211,7 @@ const urls = [
   'https://example.com/A%2fb?token=A~B&utm_source=other&flag#Keep',
 ];
 const success = (list = urls, capacity = 512) => ({ ok: true, url: list[0], urls: list, capacity, writable: true, message: 'read' });
-const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
+const deferred = () => { let resolve, reject; const promise = new Promise((r, j) => { resolve = r; reject = j; }); return { promise, resolve, reject }; };
 const contextUrls = (h) => h.context.links.map((l) => l.normalizedUrl);
 
 (async () => {
@@ -229,7 +229,8 @@ const contextUrls = (h) => h.context.links.map((l) => l.normalizedUrl);
   await h.settle();
   assert.deepEqual(contextUrls(h), urls, 'Whole replacement preserves URL order, duplicates and strings');
   assert.deepEqual(h.context.links.map((l) => l.originalInput), urls);
-  assert.equal(h.find('AppCapacityGauge').total, 512);
+  assert.equal(h.context.capacity, 512);
+  assert.equal(h.find('AppCapacityGauge').total, size.NdefSize.maxBytes, 'Actual gauge denominator stays in 4-1');
   const editKey = h.route.key;
   h.press('링크 추가');
   h.find('AppActionCard', (p) => p.title === 'Instagram').onPress(); h.flush();
@@ -247,7 +248,9 @@ const contextUrls = (h) => h.context.links.map((l) => l.normalizedUrl);
   assert.equal(h.route.key, editKey, 'Edit returns to the same editor');
   assert.equal(reads, 1);
   assert.deepEqual(contextUrls(h), ['https://edited.example/updated', ...urls.slice(1), 'https://instagram.com/new_account']);
-  assert.equal(h.find('AppCapacityGauge').total, 512);
+  assert.equal(h.find('AppCapacityGauge').total, size.NdefSize.maxBytes);
+  assert.equal(h.find('AppPrimaryButton', (p) => p.label === '저장').disabled, true, 'Over-capacity still uses the existing constant');
+  h.context.removeLink(2); h.flush(); // Shorten the retained list to fit the existing gauge limit.
   await h.press('저장'); await h.settle();
   assert.deepEqual(writes, [contextUrls(h)], 'Save uses the retained/edited full list');
   const retained = [...contextUrls(h)];
@@ -278,7 +281,8 @@ const contextUrls = (h) => h.context.links.map((l) => l.normalizedUrl);
   assert.deepEqual(contextUrls(h), ['https://new-tag.example']); assert.equal(h.context.capacity, 137); h.back();
   readResult = { ok: false, reason: 'no_url', urls: [], capacity: 137, writable: true, message: 'no URLs' };
   h.enterEdit(); await h.settle();
-  assert.deepEqual(contextUrls(h), []); assert.equal(h.find('AppCapacityGauge').total, 137);
+  assert.deepEqual(contextUrls(h), []); assert.equal(h.context.capacity, 137);
+  assert.equal(h.find('AppCapacityGauge').total, size.NdefSize.maxBytes);
   assert.equal(h.find('AppPrimaryButton', (p) => p.label === '저장').disabled, true);
   h.press('링크 추가'); // A confirmed empty tag can start editing.
   h.dispose();
@@ -342,5 +346,82 @@ const contextUrls = (h) => h.context.links.map((l) => l.normalizedUrl);
     const edit = h.find('AppPrimaryButton', (p) => p.label === '수정하기');
     assert.equal(edit.disabled, true); edit.onPress(); assert.equal(h.route.name, 'TagRead'); h.dispose();
   }
+
+  // Run the actual service with the actual editor; only the native NFC boundary is mocked.
+  const Ndef = require('react-native-nfc-manager/ndef-lib');
+  let nativeTag, holdRequest = false, pendingNativeRequest, cleanupGate;
+  let nativeRequests = 0, nativeCancels = 0;
+  const nativeManager = {
+    isSupported: async () => true, start: async () => {}, isEnabled: async () => true,
+    requestTechnology: async () => {
+      assert.equal(pendingNativeRequest, undefined, 'Previous native request must close before the next read (ERR_MULTI_REQ)');
+      ++nativeRequests;
+      if (holdRequest) { pendingNativeRequest = deferred(); return pendingNativeRequest.promise; }
+    },
+    cancelTechnologyRequest: async () => {
+      ++nativeCancels;
+      const pending = pendingNativeRequest;
+      pendingNativeRequest = undefined;
+      pending?.reject(new Error('cancelled'));
+      await cleanupGate?.promise;
+    },
+    getTag: async () => nativeTag,
+    ndefHandler: { getNdefStatus: async () => ({ status: 2, capacity: 137 }) },
+  };
+  const actualService = load('src/nfc/nfcService.ts', {
+    'react-native': { Platform: { OS: 'android' } },
+    'react-native-nfc-manager': { __esModule: true, default: nativeManager, Ndef,
+      NdefStatus: { NotSupported: 1, ReadWrite: 2, ReadOnly: 3 }, NfcTech: { Ndef: 'Ndef' } },
+    '../utils/urlNormalizer': normalizer,
+  }).NfcService;
+  readResult = (signal) => actualService.readUrl(signal);
+  const emptyRecord = { tnf: Ndef.TNF_EMPTY, type: [], id: [], payload: [] };
+  for (const records of [[], [emptyRecord], [emptyRecord, emptyRecord]]) {
+    nativeTag = { ndefMessage: records };
+    h = new Harness(); h.context.replaceFromTag(urls, 512); h.flush(); h.enterEdit(); await h.settle();
+    assert.deepEqual(contextUrls(h), [], 'Confirmed empty tag replaces previous links');
+    assert.equal(h.context.capacity, 137);
+    assert.equal(h.find('AppPrimaryButton', (p) => p.label === '저장').disabled, true);
+    const closed = nativeCancels;
+    h.press('링크 추가'); h.dispose();
+    assert.equal(nativeCancels, closed, 'Leaving after the read finished must not cancel again');
+  }
+  nativeTag = null;
+  h = new Harness(); h.context.replaceFromTag(urls, 512); h.flush(); h.enterEdit(); await h.settle();
+  assert.deepEqual(contextUrls(h), []); assert.equal(h.context.capacity, undefined);
+  assert.ok(!nodes(h.editor.tree).some((n) => n.props?.label === '저장' || n.props?.label === '링크 추가'),
+    'Failed null tag lookup must not open editing or saving');
+  h.dispose();
+
+  nativeTag = { ndefMessage: [Ndef.uriRecord('https://retry.example')] };
+  for (const departure of ['back', 'blur', 'unmount']) {
+    holdRequest = true; h = new Harness(); h.enterEdit(); await h.settle();
+    assert.ok(pendingNativeRequest, 'First read is waiting in the native request');
+    const requested = nativeRequests, cancelled = nativeCancels;
+    cleanupGate = deferred();
+    if (departure === 'back') h.back();
+    else if (departure === 'blur') { h.dispatch({ type: 'NAVIGATE', payload: { name: 'TagInfo' } }); h.back(); }
+    else h.dispose();
+    assert.equal(nativeCancels, cancelled + 1, `${departure} must cancel the pending native read once`);
+    holdRequest = false;
+    if (departure === 'back') h.enterEdit();
+    else if (departure === 'blur') h.press('다시 읽기');
+    else { h = new Harness(); h.enterEdit(); }
+    await h.settle();
+    assert.equal(nativeRequests, requested, 'New read waits for previous native cleanup');
+    cleanupGate.resolve(); cleanupGate = undefined; await h.settle();
+    assert.equal(nativeRequests, requested + 1);
+    assert.deepEqual(contextUrls(h), ['https://retry.example']); assert.equal(h.context.capacity, 137);
+
+    // A completed editor's blur/unmount must leave another owner's live read alone.
+    holdRequest = true;
+    const otherRead = actualService.readUrl(); await h.settle();
+    const otherPending = pendingNativeRequest, beforeLeaving = nativeCancels;
+    h.back(); h.dispose();
+    assert.equal(nativeCancels, beforeLeaving);
+    assert.equal(pendingNativeRequest, otherPending);
+    otherPending.resolve(); assert.equal((await otherRead).ok, true);
+  }
   console.log('PASS: actual Home/TagRead/editor/provider/input handlers and installed StackRouter; reads 1/0/0; retained edits/capacity; full replacement/blank tags; URL order/duplicates/strings; failures/cancel; unmount/blur/newer-read races');
+  console.log('PASS: actual service/editor []/TNF_EMPTY replacement, null tag blocks editing/saving, pending native read cancellation on back/blur/unmount, cleanup before retry, completed editor preserves another session, constant gauge retained for 4-1');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

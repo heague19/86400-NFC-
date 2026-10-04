@@ -7,10 +7,16 @@
 import React, { createContext, useCallback, useContext, useMemo, useState } from 'react';
 
 import type { LinkType, UrlDraft } from '@/models/linkType';
+import { CUSTOM_LINK_TYPE, detectLinkTypeFromUrl } from '@/models/linkType';
+import { NdefSize } from '@/utils/ndefSize';
 
 interface LinkWriterContextValue {
   /** 태그에 쓸 링크 목록. 0번이 항상 대표(대표 개념 없는 "빈 목록" 상태만 예외). */
   links: UrlDraft[];
+  /** 현재 편집 중인 태그에서 조회한 실제 용량. 입력 화면에 다녀와도 유지한다. */
+  capacity: number | undefined;
+  /** 새 태그의 전체 URL로 교체. 읽은 문자열과 순서, 중복을 그대로 보존한다. */
+  replaceFromTag: (urls: string[], capacity: number) => void;
   /** LinkTypeSelect에서 고른 프리셋 — 계정명/URL 입력 화면이 이걸 참조 (신규 추가 시에만 의미 있음) */
   selectedLinkType: LinkType | null;
   selectLinkType: (linkType: LinkType) => void;
@@ -31,7 +37,20 @@ const LinkWriterContext = createContext<LinkWriterContextValue | undefined>(unde
 
 export function LinkWriterProvider({ children }: { children: React.ReactNode }) {
   const [links, setLinks] = useState<UrlDraft[]>([]);
+  const [capacity, setCapacity] = useState<number | undefined>(undefined);
   const [selectedLinkType, setSelectedLinkType] = useState<LinkType | null>(null);
+
+  const replaceFromTag = useCallback((urls: string[], tagCapacity: number) => {
+    setLinks(urls.map((url) => ({
+      linkType: detectLinkTypeFromUrl(url) ?? CUSTOM_LINK_TYPE,
+      originalInput: url,
+      normalizedUrl: url,
+      estimatedBytes: NdefSize.estimateUrlRecordBytes(url),
+      isValid: true,
+    })));
+    setCapacity(tagCapacity);
+    setSelectedLinkType(null);
+  }, []);
 
   const selectLinkType = useCallback((linkType: LinkType) => {
     setSelectedLinkType(linkType);
@@ -79,12 +98,15 @@ export function LinkWriterProvider({ children }: { children: React.ReactNode }) 
 
   const clear = useCallback(() => {
     setLinks([]);
+    setCapacity(undefined);
     setSelectedLinkType(null);
   }, []);
 
   const value = useMemo<LinkWriterContextValue>(
     () => ({
       links,
+      capacity,
+      replaceFromTag,
       selectedLinkType,
       selectLinkType,
       addLink,
@@ -94,7 +116,7 @@ export function LinkWriterProvider({ children }: { children: React.ReactNode }) 
       reorder,
       clear,
     }),
-    [links, selectedLinkType, selectLinkType, addLink, updateLink, removeLink, setPrimary, reorder, clear]
+    [links, capacity, replaceFromTag, selectedLinkType, selectLinkType, addLink, updateLink, removeLink, setPrimary, reorder, clear]
   );
 
   return <LinkWriterContext.Provider value={value}>{children}</LinkWriterContext.Provider>;

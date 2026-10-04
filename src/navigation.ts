@@ -8,7 +8,8 @@ export type RootStackParamList = {
   InstagramInput: { editIndex?: number } | undefined;
   CustomUrlInput: { editIndex?: number } | undefined;
   // HANDOFF.md §4.3 — 목록 · 대표지정 · 용량게이지 · 저장을 한 화면에서 처리
-  LinkEdit: undefined;
+  // 읽은 결과를 받으면 재읽기 없이 편집한다. 없으면 진입 후 먼저 태그를 읽는다.
+  LinkEdit: { urls: string[]; capacity?: number; writable?: boolean } | undefined;
   TagRead: undefined;
   TagInfo: { url: string; linkTypeId?: string; writable: boolean; capacity?: number };
   WriteComplete: { urls: string[]; linkTypeId?: string };

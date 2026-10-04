@@ -38,9 +38,12 @@ const toNative = (records) => records.map((record) => ({
   id: Ndef.util.bytesToHexString(record.id),
 }));
 const manager = {
-  isSupported: async () => true,
+  isSupported: async () => {
+    if (options.supportError) throw new Error('support query failed');
+    return options.supported !== false;
+  },
   start: async () => {},
-  isEnabled: async () => true,
+  isEnabled: async () => options.enabled !== false,
   requestTechnology: async () => {
     events.push('request');
     if (options.requestError) throw new Error('cancelled');
@@ -51,6 +54,7 @@ const manager = {
   },
   getTag: async () => {
     events.push('tag');
+    if (options.tagNull) return null;
     return { ndefMessage: options.records ?? toNative([Ndef.uriRecord('https://example.com')]) };
   },
   ndefHandler: {
@@ -157,5 +161,35 @@ async function run(settings = {}, read = false, urls = ['https://example.com']) 
   ]), valid] }, true);
   assert.deepEqual(safe.urls, ['https://example.com/한글']);
   assert.equal((await run({ records: toNative([Ndef.textRecord('https://example.com')]) }, true)).ok, true);
+  const originalUrls = [
+    'HTTPS://Example.COM:443/A%2fb?token=A~B&utm_source=other&flag#Keep',
+    'https://www.instagram.com/Mixed_Name/',
+    'HTTPS://Example.COM:443/A%2fb?token=A~B&utm_source=other&flag#Keep',
+    'https://example.com/한글',
+  ];
+  assert.deepEqual((await run({ records: toNative(originalUrls.map((url) => Ndef.uriRecord(url))) }, true)).urls,
+    originalUrls, 'Read keeps original URL strings, record order and duplicate records');
+  const textUrls = ['https://example.com/A?utm_source=other&token=A~B', 'https://example.com/A?utm_source=other&token=A~B'];
+  assert.deepEqual((await run({ records: toNative(textUrls.map((url) => Ndef.textRecord(url))) }, true)).urls, textUrls);
+  for (const writable of [true, false]) {
+    const empty = await run({ records: [], status: { status: writable ? 2 : 3, capacity: 137 } }, true);
+    assert.equal(empty.reason, 'no_url');
+    assert.deepEqual(empty.urls, []);
+    assert.equal(empty.capacity, 137);
+    assert.equal(empty.writable, writable);
+  }
+  assert.equal((await run({ tagNull: true }, true)).reason, 'failed', 'A missing tag is not a blank tag');
+  const invalid = await run({ records: [malformed] }, true);
+  assert.equal(invalid.reason, 'no_url');
+  assert.equal(invalid.urls, undefined, 'Invalid nonempty records must not masquerade as a blank tag');
+  for (const [settings, reason] of [
+    [{ supported: false }, 'unsupported'], [{ enabled: false }, 'disabled'], [{ supportError: true }, 'failed'],
+  ]) {
+    options = settings;
+    events = [];
+    assert.equal((await NfcService.readUrl()).reason, reason);
+    assert.deepEqual(events, [], 'Unavailable NFC must not open a session');
+  }
   console.log('PASS: native fields/ids, duplicate/order/byte comparison, fresh read/errors, status fail-closed, malformed UTF-8, session cleanup');
+  console.log('PASS: read URL strings/order/duplicates, blank writable/read-only metadata, missing/invalid tag distinction, unavailable NFC');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

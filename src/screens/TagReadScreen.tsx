@@ -6,7 +6,7 @@
 
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import * as Clipboard from 'expo-clipboard';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Image, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -47,6 +47,26 @@ export function TagReadScreen({ navigation }: Props) {
   const [tag, setTag] = useState<ReadTag | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [nfcAvailable, setNfcAvailable] = useState(true);
+  const readRequest = useRef(0);
+  const readPending = useRef(false);
+  const mounted = useRef(false);
+
+  useEffect(() => {
+    mounted.current = true;
+    const unsubscribe = navigation.addListener('blur', () => {
+      ++readRequest.current;
+      if (readPending.current) {
+        readPending.current = false;
+        setReading(false);
+      }
+    });
+    return () => {
+      mounted.current = false;
+      ++readRequest.current;
+      readPending.current = false;
+      unsubscribe();
+    };
+  }, [navigation]);
 
   // 진입 시 NFC 지원 여부 확인
   useEffect(() => {
@@ -60,26 +80,34 @@ export function TagReadScreen({ navigation }: Props) {
   }, []);
 
   const onRead = async () => {
+    if (readPending.current || !navigation.isFocused()) return;
+    const request = ++readRequest.current;
+    readPending.current = true;
     setReading(true);
     setErrorMsg(null);
-    const result = await NfcService.readUrl();
-    setReading(false);
-
-    if (result.ok && result.url) {
-      // 바로 넘기지 않고 이 화면에 결과를 보여준다.
-      // 사용자가 읽힌 걸 확인한 뒤 직접 다음으로 넘어가게 함.
-      setTag({
-        url: result.url,
-        urls: result.urls?.length ? result.urls : [result.url],
-        capacity: result.capacity,
-        writable: result.writable,
-      });
-    } else if (result.reason === 'cancelled') {
-      // 사용자가 스스로 취소한 것 — 에러도 안 띄우고, 이미 읽어둔 결과도 지우지 않는다.
-      // (다시 읽기를 눌렀다가 취소했는데 기존 결과가 사라지면 당황스러움)
-    } else {
-      setTag(null);
-      setErrorMsg(result.message);
+    setTag(null); // 새 읽기가 실패/취소돼도 이전 태그로 수정하기에 진입하지 않는다.
+    try {
+      const result = await NfcService.readUrl();
+      if (!mounted.current || request !== readRequest.current || !navigation.isFocused()) return;
+      if (result.ok && result.url) {
+        setTag({
+          url: result.url,
+          urls: result.urls ?? [result.url],
+          capacity: result.capacity,
+          writable: result.writable,
+        });
+      } else {
+        setErrorMsg(result.message);
+      }
+    } catch {
+      if (mounted.current && request === readRequest.current && navigation.isFocused()) {
+        setErrorMsg('태그를 읽지 못했습니다. 다시 시도해주세요.');
+      }
+    } finally {
+      if (mounted.current && request === readRequest.current) {
+        readPending.current = false;
+        setReading(false);
+      }
     }
   };
 
@@ -103,11 +131,23 @@ export function TagReadScreen({ navigation }: Props) {
 
   /** 확인 후 상세 화면으로 — 태그가 알려준 실제 값을 넘긴다 */
   const onOpenDetail = () => {
-    if (!tag) return;
+    if (!tag || readPending.current || !navigation.isFocused()) return;
     navigation.navigate('TagInfo', {
       url: tag.url,
       writable: tag.writable ?? false,
       capacity: tag.capacity,
+    });
+  };
+
+  const canEdit = tag?.writable === true && typeof tag.capacity === 'number' &&
+    Number.isSafeInteger(tag.capacity) && tag.capacity > 0;
+
+  const onEditTag = () => {
+    if (!tag || !canEdit || readPending.current || !navigation.isFocused()) return;
+    navigation.navigate('LinkEdit', {
+      urls: tag.urls,
+      capacity: tag.capacity,
+      writable: tag.writable,
     });
   };
 
@@ -208,7 +248,9 @@ export function TagReadScreen({ navigation }: Props) {
         {tag ? (
           // 읽은 뒤 — 확인하고 넘어가거나 다시 읽거나
           <>
-            <AppPrimaryButton label="상세 정보 보기" onPress={onOpenDetail} />
+            <AppPrimaryButton label="수정하기" onPress={onEditTag} disabled={!canEdit} />
+            <View style={{ height: AppSpacing.itemGap }} />
+            <AppSecondaryButton label="상세 정보 보기" onPress={onOpenDetail} />
             <View style={{ height: AppSpacing.itemGap }} />
             <AppSecondaryButton label="다시 읽기" onPress={onRead} />
           </>

@@ -62,7 +62,7 @@ export function CustomUrlInputScreen({ navigation, route }: Props) {
     } else {
       addLink(draft);
     }
-    navigation.navigate('LinkEdit');
+    navigation.popTo('LinkEdit', undefined, { merge: true });
   };
 
   return (

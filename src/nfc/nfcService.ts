@@ -35,7 +35,7 @@ export interface NfcReadResult {
   ok: boolean;
   /** 첫 번째(대표) URL — 기존 호출부 호환용 */
   url?: string;
-  /** 태그에 들어 있는 모든 URL. 첫 번째가 대표(NDEF 첫 레코드) */
+  /** 태그에 들어 있는 모든 URL. no_url의 []는 상태 조회에 성공한 빈 NDEF 태그만 뜻한다. */
   urls?: string[];
   /** 태그 실제 용량(byte) — 읽어낸 경우에만 */
   capacity?: number;
@@ -152,8 +152,8 @@ function extractUrls(records: Array<{ tnf?: number; type?: unknown; payload?: un
   const urls: string[] = [];
 
   const push = (u: string | null | undefined) => {
-    const v = (u ?? '').trim();
-    if (isValidHttpUrl(v) && !urls.includes(v)) urls.push(v);
+    // 검증만 하고 원문을 보존한다. 기존 태그의 중복 URL도 각각 별도 레코드다.
+    if (typeof u === 'string' && isValidHttpUrl(u)) urls.push(u);
   };
 
   // URI 레코드를 순서대로 수집 — NDEF 첫 레코드가 대표 링크다
@@ -176,7 +176,7 @@ function extractUrls(records: Array<{ tnf?: number; type?: unknown; payload?: un
       try {
         if (Ndef.isType(record as never, Ndef.TNF_WELL_KNOWN, Ndef.RTD_TEXT)) {
           const text = Ndef.text.decodePayload(record.payload as never);
-          if (text && /^https?:\/\//i.test(text.trim())) push(text.trim());
+          if (text && /^https?:\/\//i.test(text.trim())) push(text);
         }
       } catch {
         // 무시
@@ -255,19 +255,25 @@ export const NfcService = {
 
   /** NFC 태그에서 URL 읽기 */
   async readUrl(): Promise<NfcReadResult> {
-    const notReady = await ensureReady();
-    if (notReady) return { ok: false, reason: notReady, message: MESSAGES[notReady] };
-
     try {
+      const notReady = await ensureReady();
+      if (notReady) return fail(notReady);
       return await withNdefSession('태그를 읽는 중입니다.\n휴대폰 뒷면을 태그에 대주세요.', async () => {
         const status = await getCheckedNdefStatus();
         if (!status) return fail('status_unknown');
         if (status.status === NdefStatus.NotSupported) return fail('not_ndef');
         const tag = await NfcManager.getTag();
+        if (!tag) return fail('failed');
 
         const records = tag?.ndefMessage;
         if (!records || records.length === 0) {
-          return { ok: false, reason: 'no_url' as const, message: MESSAGES.no_url };
+          // 기존 읽기 화면의 no_url 처리를 유지하면서 편집은 빈 태그로 시작할 수 있다.
+          return {
+            ...fail('no_url'),
+            urls: [],
+            capacity: status.capacity,
+            writable: status.status === NdefStatus.ReadWrite,
+          };
         }
 
         const urls = extractUrls(records as never);

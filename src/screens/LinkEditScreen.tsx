@@ -2,11 +2,10 @@
 // 태그 접촉 2회(읽기 1 + 저장 1)가 일어나는 유일한 화면.
 // 목록에 링크를 쌓고, 대표를 지정하고, 용량을 확인한 뒤 한 번에 태그에 쓴다.
 //
-// 이 화면 진입 시 태그를 다시 읽지 않는다 (HomeScreen에서 바로 진입하는 "신규" 흐름과
-// TagReadScreen "수정하기"로 들어오는 흐름 둘 다, 태그 접촉은 이미 다른 곳에서 처리됨).
+// 홈에서는 먼저 읽는다. 전달받은 읽기 결과와 같은 편집의 입력 화면 복귀는 재읽기하지 않는다.
 
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -22,24 +21,100 @@ import type { RootStackParamList } from '@/navigation';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'LinkEdit'>;
 
-export function LinkEditScreen({ navigation }: Props) {
-  const { links, removeLink, setPrimary } = useLinkWriter();
+export function LinkEditScreen({ navigation, route }: Props) {
+  const { links, capacity, replaceFromTag, clear, removeLink, setPrimary } = useLinkWriter();
+  const [ready, setReady] = useState(false);
+  const [reading, setReading] = useState(false);
+  const [readError, setReadError] = useState<string | null>(null);
+  const readRequest = useRef(0);
+  const readPending = useRef(false);
+  const mounted = useRef(false);
   const [writing, setWriting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  const onRead = useCallback(async () => {
+    if (readPending.current || !navigation.isFocused()) return;
+    const request = ++readRequest.current;
+    readPending.current = true;
+    setReady(false);
+    setReading(true);
+    setReadError(null);
+    clear(); // 읽기 전 이전 태그의 목록과 용량을 사용할 수 없게 한다.
+    try {
+      const result = await NfcService.readUrl();
+      if (!mounted.current || request !== readRequest.current || !navigation.isFocused()) return;
+      const urls = result.ok
+        ? result.urls ?? (result.url ? [result.url] : undefined)
+        : result.reason === 'no_url' && result.urls?.length === 0 ? result.urls : undefined;
+      if (urls && result.writable === true && typeof result.capacity === 'number' &&
+          Number.isSafeInteger(result.capacity) && result.capacity > 0) {
+        replaceFromTag(urls, result.capacity);
+        setReady(true);
+      } else {
+        setReadError(result.writable === false
+          ? '이 태그는 읽기 전용이라 수정할 수 없습니다.'
+          : result.ok ? '태그 상태를 확인할 수 없습니다. 다시 읽어주세요.' : result.message);
+      }
+    } catch {
+      if (mounted.current && request === readRequest.current && navigation.isFocused()) {
+        setReadError('태그를 읽지 못했습니다. 다시 시도해주세요.');
+      }
+    } finally {
+      if (mounted.current && request === readRequest.current) {
+        readPending.current = false;
+        setReading(false);
+      }
+    }
+  }, [navigation, clear, replaceFromTag]);
+
+  useEffect(() => {
+    mounted.current = true;
+    const unsubscribe = navigation.addListener('blur', () => {
+      ++readRequest.current;
+      if (readPending.current) {
+        readPending.current = false;
+        setReading(false);
+        setReadError('태그 읽기가 중단되었습니다. 다시 읽어주세요.');
+      }
+    });
+    setReady(false);
+    setReadError(null);
+    if (route.params) {
+      const { urls, capacity: tagCapacity, writable } = route.params;
+      clear();
+      if (writable !== false && typeof tagCapacity === 'number' &&
+          Number.isSafeInteger(tagCapacity) && tagCapacity > 0) {
+        replaceFromTag(urls, tagCapacity);
+        setReady(true);
+      } else {
+        setReadError(writable === false
+          ? '이 태그는 읽기 전용이라 수정할 수 없습니다.'
+          : '태그 상태를 확인할 수 없습니다. 다시 읽어주세요.');
+      }
+    } else {
+      void onRead();
+    }
+    return () => {
+      mounted.current = false;
+      ++readRequest.current;
+      readPending.current = false;
+      unsubscribe();
+    };
+  }, [navigation, route.params, clear, replaceFromTag, onRead]);
+
   const urls = links.map((l) => l.normalizedUrl);
   const usedBytes = NdefSize.estimateMessageBytes(urls);
-  // HANDOFF.md §2.2 — 분모는 항상 실측값. 이 화면은 이전 단계(홈/읽기)에서
-  // 이미 태그를 읽었다는 전제이지만, 아직 실측 capacity를 들고 올 경로가 없어
-  // 우선 NTAG213 기본값으로 표시한다. (TODO: 진입 시 전달받은 실측 capacity로 교체)
-  const totalCapacity = NdefSize.maxBytes;
+  // 실측 용량을 입력 화면 복귀에도 유지한다. 전체 폴백 정리는 4단계에서 처리한다.
+  const totalCapacity = capacity ?? NdefSize.maxBytes;
   const overCapacity = usedBytes > totalCapacity;
 
   const onAddLink = () => {
+    if (!ready || reading || writing || !navigation.isFocused()) return;
     navigation.navigate('LinkTypeSelect');
   };
 
   const onEditLink = (index: number) => {
+    if (!ready || reading || writing || !navigation.isFocused()) return;
     const link = links[index];
     if (link.linkType.inputMode === 'username') {
       navigation.navigate('InstagramInput', { editIndex: index });
@@ -56,7 +131,7 @@ export function LinkEditScreen({ navigation }: Props) {
   };
 
   const onSave = async () => {
-    if (links.length === 0 || overCapacity) return;
+    if (!ready || reading || writing || !navigation.isFocused() || links.length === 0 || overCapacity) return;
     setWriting(true);
     setErrorMsg(null);
     const result = await NfcService.writeUrls(urls);
@@ -71,6 +146,27 @@ export function LinkEditScreen({ navigation }: Props) {
       setErrorMsg(result.message);
     }
   };
+
+  if (!ready) {
+    return (
+      <SafeAreaView style={styles.safe} edges={['bottom']}>
+        <ScrollView contentContainerStyle={styles.content}>
+          <Text style={AppText.headlineLarge}>태그를 먼저 읽으세요</Text>
+          <View style={{ height: AppSpacing.sm }} />
+          <Text style={AppText.bodyMedium}>휴대폰 뒷면을 태그에 대면 기존 링크를 불러옵니다.</Text>
+          {readError ? (
+            <>
+              <View style={{ height: AppSpacing.lg }} />
+              <AppInfoCard title="태그 읽기" message={readError} variant="error" />
+            </>
+          ) : null}
+        </ScrollView>
+        <View style={styles.footer}>
+          <AppPrimaryButton label={reading ? '태그를 대세요…' : '다시 읽기'} onPress={onRead} loading={reading} />
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.safe} edges={['bottom']}>
@@ -161,7 +257,7 @@ export function LinkEditScreen({ navigation }: Props) {
         <AppPrimaryButton
           label={writing ? '태그를 대세요…' : '저장'}
           onPress={onSave}
-          disabled={links.length === 0 || overCapacity}
+          disabled={!ready || reading || links.length === 0 || overCapacity}
           loading={writing}
         />
       </View>

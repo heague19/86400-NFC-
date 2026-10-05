@@ -9,7 +9,7 @@ import type { LinkType } from '@/models/linkType';
 
 const TRACKING_PARAMS = new Set(['utm_source', 'utm_medium', 'utm_campaign', 'igsh']);
 
-const HANDLE_CHARS_PATTERN = /^[A-Za-z0-9._]+$/;
+const HANDLE_CHARS_PATTERN = /^[A-Za-z0-9._-]+$/;
 const INVALID_PERCENT_ENCODING_PATTERN = /%(?![0-9a-fA-F]{2})/;
 const SCHEME_HTTP_PATTERN = /^https?:\/\//i;
 const URL_SCHEME_PATTERN = /^[a-z][a-z0-9+.-]*:\/\//i;
@@ -35,7 +35,9 @@ export interface PresetInputResult {
 
 /**
  * 프리셋 입력 → 저장 URL (HANDOFF §5.1 P1~P7).
- * 공백 제거 → 전체 URL 붙여넣기 처리 → 선행 @ 제거 → 허용 문자 검증 → 대소문자 유지 → 패턴 조립.
+ * 공백 제거 → 전체 URL 붙여넣기 처리 → 선행 @ 제거 → 끝 / 제거 → 허용 문자 검증 → 대소문자 유지 → 패턴 조립.
+ * 허용 문자는 영숫자 . _ - 이고, 길이 규칙(YouTube 3~30자)은 프리셋 정의에 있을 때만 적용한다.
+ * 이 규칙들은 기타(normalizeFullUrl)에 적용하지 않는다.
  */
 export function normalizePresetInput(preset: LinkType, input: string): PresetInputResult {
   const none = (customSuggestion: string | null = null): PresetInputResult =>
@@ -52,12 +54,18 @@ export function normalizePresetInput(preset: LinkType, input: string): PresetInp
     if (extracted === null) return none(normalizeFullUrl(handle));
     handle = extracted;
   }
-  handle = handle.replace(/^@+/, '');
-  if (handle.length === 0) return none();
+  handle = handle.replace(/^@+/, '').replace(/\/+$/, '');
+  // 비었거나 공백이 남으면 URL이 될 수 없다. (`@ /`처럼 벗기고 나서 공백만 남는 경우 포함 —
+  // isValidHttpUrl은 trim 후 검사하므로 여기서 직접 걸러야 한다.)
+  if (handle.length === 0 || /\s/.test(handle)) return none();
 
   const warnings: LinkWarning[] = [];
   if (!HANDLE_CHARS_PATTERN.test(handle)) {
-    warnings.push({ kind: 'chars', message: '허용 문자(영문·숫자·. _)가 아닌 글자가 있습니다.' });
+    warnings.push({ kind: 'chars', message: '허용 문자(영문·숫자·. _ -)가 아닌 글자가 있습니다.' });
+  }
+  const length = preset.handleLength;
+  if (length && (handle.length < length.min || handle.length > length.max)) {
+    warnings.push({ kind: 'format', message: `${preset.label} 계정명은 ${length.min}~${length.max}자여야 합니다.` });
   }
 
   // 함수 치환 — 계정명의 `$&` 같은 문자가 치환 문법으로 해석되지 않게 한다.

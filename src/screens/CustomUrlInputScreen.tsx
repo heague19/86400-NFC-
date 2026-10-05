@@ -1,5 +1,6 @@
-// 커스텀 URL 입력 화면 — Flutter custom_url_input_screen.dart 이식본
-// LinkedIn / GitHub / 직접입력 공용
+// 기타(직접 입력) 전용 URL 입력 화면 — HANDOFF.md §4.6
+// 프리셋 6종은 계정명 입력 화면(InstagramInputScreen)이 맡는다. 이 화면은 허용 문자 검증 없이
+// 어떤 http(s) URL이든 받으므로, 프리셋이 여기로 새어 들어오면 안 된다 (STATUS 판정 2).
 
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import React, { useMemo, useState } from 'react';
@@ -30,12 +31,13 @@ import type { RootStackParamList } from '@/navigation';
 type Props = NativeStackScreenProps<RootStackParamList, 'CustomUrlInput'>;
 
 export function CustomUrlInputScreen({ navigation, route }: Props) {
-  const { links, addLink, updateLink, selectedLinkType } = useLinkWriter();
+  const { links, addLink, updateLink } = useLinkWriter();
   const editIndex = route.params?.editIndex;
   const isEditing = editIndex !== undefined;
-  const linkType = isEditing ? links[editIndex]?.linkType ?? CUSTOM_LINK_TYPE : selectedLinkType ?? CUSTOM_LINK_TYPE;
+  const linkType = CUSTOM_LINK_TYPE;
+  // initialText: 프리셋 입력 화면에서 "기타로 추가"로 넘어온 붙여넣기 원문
   const [text, setText] = useState(() =>
-    isEditing ? links[editIndex]?.originalInput ?? '' : ''
+    route.params?.initialText ?? (isEditing ? links[editIndex]?.originalInput ?? '' : '')
   );
   const [removeTracking, setRemoveTracking] = useState(true);
 

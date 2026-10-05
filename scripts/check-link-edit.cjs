@@ -82,7 +82,7 @@ const model = load('src/models/linkType.ts', {});
 const size = load('src/utils/ndefSize.ts', {});
 const normalizer = load('src/utils/urlNormalizer.ts', {});
 const state = load('src/state/LinkWriterContext.tsx', {
-  react: React, '@/models/linkType': model, '@/utils/ndefSize': size,
+  react: React, '@/models/linkType': model, '@/utils/ndefSize': size, '@/utils/urlNormalizer': normalizer,
 });
 const tokens = load('src/theme/tokens.ts', {});
 let reads = 0;
@@ -152,6 +152,7 @@ class Harness {
       },
       navigate: (name, params) => this.dispatch({ type: 'NAVIGATE', payload: { name, params } }),
       popTo: (...args) => this.dispatch(StackActions.popTo(...args)),
+      replace: (name, params) => this.dispatch(StackActions.replace(name, params)),
     };
   }
   dispatch(action) {
@@ -238,7 +239,7 @@ const contextUrls = (h) => h.context.links.map((l) => l.normalizedUrl);
   h.press('다음');
   assert.equal(h.route.key, editKey, 'Add returns to the same mounted editor');
   assert.equal(reads, 1, 'Add return does not re-read');
-  assert.deepEqual(contextUrls(h), [...urls, 'https://instagram.com/new_account']);
+  assert.deepEqual(contextUrls(h), [...urls, 'https://www.instagram.com/new_account/']);
   assert.equal(h.context.capacity, 512);
   h.find('Pressable', (p) => nodes(p.children).some((n) => n.type === 'Text' && n.props.children.includes(urls[0]))).onPress();
   h.flush();
@@ -247,7 +248,7 @@ const contextUrls = (h) => h.context.links.map((l) => l.normalizedUrl);
   h.press('다음');
   assert.equal(h.route.key, editKey, 'Edit returns to the same editor');
   assert.equal(reads, 1);
-  assert.deepEqual(contextUrls(h), ['https://edited.example/updated', ...urls.slice(1), 'https://instagram.com/new_account']);
+  assert.deepEqual(contextUrls(h), ['https://edited.example/updated', ...urls.slice(1), 'https://www.instagram.com/new_account/']);
   assert.equal(h.find('AppCapacityGauge').total, size.NdefSize.maxBytes);
   assert.equal(h.find('AppPrimaryButton', (p) => p.label === '저장').disabled, true, 'Over-capacity still uses the existing constant');
   h.context.removeLink(2); h.flush(); // Shorten the retained list to fit the existing gauge limit.
@@ -257,6 +258,67 @@ const contextUrls = (h) => h.context.links.map((l) => l.normalizedUrl);
   h.dispatch({ type: 'NAVIGATE', payload: { name: 'LinkEdit', params: { urls: retained, capacity: h.context.capacity } } });
   assert.equal(reads, 1, 'A future completion can supply written URLs/capacity without a read');
   assert.deepEqual(contextUrls(h), retained);
+  h.dispose();
+
+  // 3-5 (F2/K12/K7): 고른 프리셋의 입력 화면과 §5.2 URL 패턴. Instagram으로 되돌아가지 않는다.
+  const addPreset = (host, label, input) => {
+    host.press('링크 추가');
+    host.find('AppActionCard', (p) => p.title === label).onPress(); host.flush();
+    host.find('AppTextField').onChangeText(input); host.flush();
+  };
+  readResult = success(['https://example.com/seed'], 512); h = new Harness(); h.enterEdit(); await h.settle();
+  const seedKey = h.route.key;
+  for (const [id, label, input, expected] of [
+    ['x', 'X', 'hong', 'https://x.com/hong'],
+    ['github', 'GitHub', 'octocat', 'https://github.com/octocat'],
+    ['tiktok', 'TikTok', '@Hong.Gil', 'https://www.tiktok.com/@Hong.Gil'],
+    ['youtube', 'YouTube', 'hong_yt', 'https://youtube.com/@hong_yt'],
+    ['instagram', 'Instagram', 'Hong_Gil', 'https://www.instagram.com/Hong_Gil/'],
+    ['linkedin', 'LinkedIn', 'hong.gil', 'https://linkedin.com/in/hong.gil'],
+  ]) {
+    addPreset(h, label, input);
+    assert.equal(h.route.name, 'InstagramInput', `${label} uses the shared account screen`);
+    assert.equal(h.find('AppInfoCard', (p) => p.title === '생성될 링크').message, expected, `${label} preview`);
+    h.press('다음');
+    assert.equal(h.route.key, seedKey, 'Preset add returns to the same editor');
+    const added = h.context.links.at(-1);
+    assert.equal(added.normalizedUrl, expected); assert.equal(added.linkType.id, id, `${label} must not become Instagram`);
+    assert.equal(added.originalInput, input);
+  }
+  assert.equal(reads, 1, 'Preset adds never re-read the tag');
+  // 기타는 URL 전체 입력. 허용 문자 검증이 없고 추적 파라미터는 현행대로 제거한다 (STATUS 판정 2).
+  h.press('링크 추가'); h.find('AppActionCard', (p) => p.title === '직접 입력').onPress(); h.flush();
+  assert.equal(h.route.name, 'CustomUrlInput');
+  h.find('AppTextField').onChangeText('Example.com/a/b:c?utm_source=x&keep=1'); h.flush(); h.press('다음');
+  assert.deepEqual([h.context.links.at(-1).linkType.id, h.context.links.at(-1).normalizedUrl], ['custom', 'https://example.com/a/b:c?keep=1']);
+  // 다른 서비스 주소를 붙여넣으면 만들지 않고 기타로 넘긴다 — 라벨이 붙여넣은 서비스가 되지 않는다.
+  const beforePaste = h.context.links.length;
+  addPreset(h, 'X', 'https://github.com/foo/bar');
+  assert.ok(!nodes(h.editor.tree).some((n) => n.props?.title === '생성될 링크'), 'No preset URL for another domain');
+  assert.equal(h.find('AppPrimaryButton', (p) => p.label === '다음').disabled, true);
+  h.press('기타로 추가');
+  assert.equal(h.route.name, 'CustomUrlInput'); assert.equal(h.route.params.initialText, 'https://github.com/foo/bar');
+  assert.equal(h.find('AppTextField').value, 'https://github.com/foo/bar'); h.press('다음');
+  assert.equal(h.route.key, seedKey);
+  assert.deepEqual([h.context.links.length, h.context.links.at(-1).linkType.id, h.context.links.at(-1).normalizedUrl],
+    [beforePaste + 1, 'custom', 'https://github.com/foo/bar']);
+  // 같은 서비스 전체 URL 붙여넣기는 계정명만 꺼내 그 프리셋 패턴으로 조립한다.
+  addPreset(h, 'X', 'https://twitter.com/hong?s=21'); assert.equal(h.find('AppInfoCard', (p) => p.title === '생성될 링크').message, 'https://x.com/hong');
+  h.back(); h.back(); h.dispose();
+  // 태그에서 읽은 URL은 계정 페이지일 때만 프리셋으로 분류한다 — 나머지는 기타(문자열·순서는 그대로).
+  const tagUrls = ['https://github.com/org/repo', 'https://www.youtube.com/watch?v=abc', 'https://www.instagram.com/Mixed_Name/', 'https://example.com/seed'];
+  readResult = success(tagUrls, 512); h = new Harness(); h.enterEdit(); await h.settle();
+  assert.deepEqual(contextUrls(h), tagUrls);
+  assert.deepEqual(h.context.links.map((l) => l.linkType.id), ['custom', 'custom', 'instagram', 'custom']);
+  assert.ok(h.context.links.every((l) => l.fromTag));
+  h.find('Pressable', (p) => nodes(p.children).some((n) => n.type === 'Text' && n.props.children.includes(tagUrls[2]))).onPress(); h.flush();
+  assert.equal(h.route.name, 'InstagramInput'); assert.deepEqual(h.route.params, { editIndex: 2 });
+  assert.equal(h.find('AppTextField').value, tagUrls[2]);
+  assert.equal(h.find('AppInfoCard', (p) => p.title === '생성될 링크').message, tagUrls[2], 'Editing keeps the account');
+  h.find('AppTextField').onChangeText('new_name'); h.flush(); h.press('다음');
+  assert.equal(contextUrls(h)[2], 'https://www.instagram.com/new_name/'); assert.equal(h.context.links[2].fromTag, undefined);
+  h.find('Pressable', (p) => nodes(p.children).some((n) => n.type === 'Text' && n.props.children.includes(tagUrls[0]))).onPress(); h.flush();
+  assert.equal(h.route.name, 'CustomUrlInput', 'A github.com/org/repo row edits as 기타, not as a GitHub handle');
   h.dispose();
 
   readResult = success(); h = new Harness();

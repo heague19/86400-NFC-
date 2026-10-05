@@ -6,10 +6,10 @@ import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppActionCard } from '@/components/AppCards';
-import { LINK_TYPES, type LinkType } from '@/models/linkType';
+import { CUSTOM_LINK_TYPE, LINK_TYPES, type LinkType } from '@/models/linkType';
 import { useLinkWriter } from '@/state/LinkWriterContext';
 import { linkTypeIcon } from '@/theme/icons';
-import { AppColors, AppSpacing, AppText } from '@/theme/tokens';
+import { AppColors, AppOpacity, AppSpacing, AppText } from '@/theme/tokens';
 import type { RootStackParamList } from '@/navigation';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'LinkTypeSelect'>;
@@ -37,13 +37,17 @@ export function LinkTypeSelectScreen({ navigation }: Props) {
 
         {LINK_TYPES.map((linkType, i) => (
           <View key={linkType.id}>
+            {/* HANDOFF §4.4-3 — 기타는 구분선 아래 */}
+            {linkType.id === CUSTOM_LINK_TYPE.id ? <View style={styles.divider} /> : null}
             <AppActionCard
               icon={linkTypeIcon(linkType.id)}
               title={linkType.label}
               description={linkType.description}
               onPress={() => onSelect(linkType)}
             />
-            {i < LINK_TYPES.length - 1 ? <View style={{ height: AppSpacing.itemGap }} /> : null}
+            {i < LINK_TYPES.length - 1 ? (
+              <View style={{ height: AppSpacing.itemGap }} />
+            ) : null}
           </View>
         ))}
       </ScrollView>
@@ -57,5 +61,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: AppSpacing.screenPadding,
     paddingTop: 8,
     paddingBottom: AppSpacing.bottomSafePadding,
+  },
+  divider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: AppColors.border,
+    opacity: AppOpacity.decorative,
+    marginBottom: AppSpacing.itemGap + AppSpacing.xs,
+    marginTop: AppSpacing.xs,
   },
 });

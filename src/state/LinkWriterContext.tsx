@@ -9,6 +9,7 @@ import React, { createContext, useCallback, useContext, useMemo, useState } from
 import type { LinkType, UrlDraft } from '@/models/linkType';
 import { CUSTOM_LINK_TYPE, detectLinkTypeFromUrl } from '@/models/linkType';
 import { NdefSize } from '@/utils/ndefSize';
+import { extractPresetHandle } from '@/utils/urlNormalizer';
 
 interface LinkWriterContextValue {
   /** 태그에 쓸 링크 목록. 0번이 항상 대표(대표 개념 없는 "빈 목록" 상태만 예외). */
@@ -41,13 +42,19 @@ export function LinkWriterProvider({ children }: { children: React.ReactNode }) 
   const [selectedLinkType, setSelectedLinkType] = useState<LinkType | null>(null);
 
   const replaceFromTag = useCallback((urls: string[], tagCapacity: number) => {
-    setLinks(urls.map((url) => ({
-      linkType: detectLinkTypeFromUrl(url) ?? CUSTOM_LINK_TYPE,
-      originalInput: url,
-      normalizedUrl: url,
-      estimatedBytes: NdefSize.estimateUrlRecordBytes(url),
-      isValid: true,
-    })));
+    setLinks(urls.map((url) => {
+      // 도메인만 같다고 프리셋으로 분류하지 않는다 — github.com/org/repo, youtube.com/watch?v=… 같은 URL을
+      // 계정명 화면으로 열면 엉뚱한 URL이 조립된다. 계정 페이지가 아니면 기타로 둔다. 문자열·순서는 그대로.
+      const detected = detectLinkTypeFromUrl(url);
+      return {
+        linkType: detected && extractPresetHandle(detected, url) !== null ? detected : CUSTOM_LINK_TYPE,
+        originalInput: url,
+        normalizedUrl: url,
+        estimatedBytes: NdefSize.estimateUrlRecordBytes(url),
+        isValid: true,
+        fromTag: true,
+      };
+    }));
     setCapacity(tagCapacity);
     setSelectedLinkType(null);
   }, []);

@@ -1,45 +1,66 @@
-// Instagram 입력 화면 — Flutter instagram_input_screen.dart 이식본
+// 프리셋 공용 계정명 입력 화면 — HANDOFF.md §4.5
+//
+// 라우트·파일 이름은 Instagram 고정이던 시절 그대로지만 지금은 6종 프리셋 전부가 이 화면을 쓴다.
+// 어떤 프리셋인지는 신규 추가면 selectedLinkType, 기존 행 수정이면 그 행의 linkType에서 읽는다.
+// Instagram 같은 기본값으로 되돌아가지 않는다 — 그게 F2(X를 골라도 Instagram URL이 나옴)였다.
 
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import React, { useMemo, useState } from 'react';
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { AppPrimaryButton } from '@/components/AppButton';
+import { AppPrimaryButton, AppSecondaryButton } from '@/components/AppButton';
 import { AppInfoCard } from '@/components/AppCards';
 import { AppRingBadge } from '@/components/AppRingBadge';
 import { AppTextField } from '@/components/AppTextField';
-import { LINK_TYPES, type UrlDraft } from '@/models/linkType';
+import type { UrlDraft } from '@/models/linkType';
 import { useLinkWriter } from '@/state/LinkWriterContext';
 import { NdefSize } from '@/utils/ndefSize';
-import { normalizeInstagramUsername } from '@/utils/urlNormalizer';
+import { normalizePresetInput, type PresetInputResult } from '@/utils/urlNormalizer';
 import { linkTypeIcon } from '@/theme/icons';
 import { AppColors, AppOpacity, AppSpacing, AppText } from '@/theme/tokens';
 import type { RootStackParamList } from '@/navigation';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'InstagramInput'>;
 
-const INSTAGRAM = LINK_TYPES.find((t) => t.id === 'instagram')!;
+const EMPTY_RESULT: PresetInputResult = { url: null, warnings: [], customSuggestion: null };
 
 export function InstagramInputScreen({ navigation, route }: Props) {
-  const { addLink, updateLink, links } = useLinkWriter();
+  const { addLink, updateLink, links, selectedLinkType } = useLinkWriter();
   const editIndex = route.params?.editIndex;
   const isEditing = editIndex !== undefined;
+  const linkType = isEditing ? links[editIndex]?.linkType : selectedLinkType;
   const [text, setText] = useState(() =>
     isEditing ? links[editIndex]?.originalInput ?? '' : ''
   );
 
-  const normalizedUrl = useMemo(() => normalizeInstagramUsername(text), [text]);
+  const result = useMemo(
+    () => (linkType ? normalizePresetInput(linkType, text) : EMPTY_RESULT),
+    [linkType, text]
+  );
+  const { url, customSuggestion } = result;
   const hasInput = text.trim().length > 0;
-  const showError = hasInput && normalizedUrl === null;
+  // 경고를 배지로 보여주기 전(3-7)에는 경고가 있는 입력도 추가하지 못하게 둔다 (E5 순서).
+  const blocked = url === null || result.warnings.length > 0;
+  const showError = hasInput && blocked && customSuggestion === null;
+
+  if (!linkType) {
+    return (
+      <SafeAreaView style={styles.safe} edges={['bottom']}>
+        <View style={styles.content}>
+          <AppInfoCard message="링크 유형을 먼저 선택하세요." variant="error" />
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   const onNext = () => {
-    if (normalizedUrl === null) return;
+    if (url === null || blocked) return;
     const draft: UrlDraft = {
-      linkType: INSTAGRAM,
+      linkType,
       originalInput: text.trim(),
-      normalizedUrl,
-      estimatedBytes: NdefSize.estimateUrlRecordBytes(normalizedUrl),
+      normalizedUrl: url,
+      estimatedBytes: NdefSize.estimateUrlRecordBytes(url),
       isValid: true,
     };
     if (isEditing) {
@@ -50,6 +71,11 @@ export function InstagramInputScreen({ navigation, route }: Props) {
     navigation.popTo('LinkEdit', undefined, { merge: true });
   };
 
+  // 다른 서비스 주소를 붙여넣었을 때 — 같은 입력을 기타(URL 입력) 화면으로 넘긴다.
+  const onAddAsCustom = () => {
+    navigation.replace('CustomUrlInput', { editIndex, initialText: text.trim() });
+  };
+
   return (
     <SafeAreaView style={styles.safe} edges={['bottom']}>
       <KeyboardAvoidingView
@@ -57,35 +83,48 @@ export function InstagramInputScreen({ navigation, route }: Props) {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
         <ScrollView contentContainerStyle={styles.content}>
-          <Text style={[AppText.headlineLarge, styles.centerTitle]}>Instagram 계정</Text>
+          <Text style={[AppText.headlineLarge, styles.centerTitle]}>{linkType.label} 계정</Text>
           <View style={{ height: AppSpacing.sm }} />
           <Text style={[AppText.bodyMedium, styles.centerSub]}>
-            계정명을 입력하면 Instagram 링크를 자동으로 만듭니다.
+            계정명을 입력하면 {linkType.label} 링크를 자동으로 만듭니다.
           </Text>
 
           <View style={{ height: AppSpacing.lg }} />
-          <AppRingBadge icon={linkTypeIcon('instagram')} pulse />
+          <AppRingBadge icon={linkTypeIcon(linkType.id)} pulse />
           <View style={{ height: AppSpacing.xl }} />
 
           <AppTextField
             value={text}
             onChangeText={setText}
             label="계정명"
-            placeholder={INSTAGRAM.placeholder}
+            placeholder={linkType.placeholder}
             hasError={showError}
-            errorText="올바른 Instagram 계정명이 아닙니다."
+            errorText={result.warnings[0]?.message ?? `올바른 ${linkType.label} 계정명이 아닙니다.`}
           />
 
-          {normalizedUrl ? (
+          {url ? (
             <>
               <View style={{ height: AppSpacing.md }} />
-              <AppInfoCard title="생성될 링크" message={normalizedUrl} variant="neutral" />
+              <AppInfoCard title="생성될 링크" message={url} variant="neutral" />
+            </>
+          ) : null}
+
+          {customSuggestion ? (
+            <>
+              <View style={{ height: AppSpacing.md }} />
+              <AppInfoCard
+                title="다른 주소입니다"
+                message={`${linkType.label} 계정 주소가 아닙니다. 기타 링크로 추가할까요?\n${customSuggestion}`}
+                variant="neutral"
+              />
+              <View style={{ height: AppSpacing.sm }} />
+              <AppSecondaryButton label="기타로 추가" onPress={onAddAsCustom} />
             </>
           ) : null}
         </ScrollView>
 
         <View style={styles.footer}>
-          <AppPrimaryButton label="다음" onPress={onNext} disabled={normalizedUrl === null} />
+          <AppPrimaryButton label="다음" onPress={onNext} disabled={blocked} />
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>

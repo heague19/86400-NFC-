@@ -6,7 +6,12 @@ export interface LinkType {
   id: string;
   label: string;
   inputMode: LinkInputMode;
-  baseUrl?: string;
+  /** 프리셋 전용 — 저장 URL 패턴 (HANDOFF §5.2). `{handle}` 자리에 계정명이 들어간다. */
+  urlPattern?: string;
+  /** 프리셋 전용 — 전체 URL을 붙여넣었을 때 이 서비스로 인정하는 도메인 (www./m./mobile. 접두는 무시) */
+  hosts?: string[];
+  /** 프리셋 전용 — 계정명 길이 제한. YouTube만 있다 (§5.2) */
+  handleLength?: { min: number; max: number };
   placeholder: string;
   description: string;
   iconName: string;
@@ -17,52 +22,61 @@ export const LINK_TYPES: LinkType[] = [
     id: 'instagram',
     label: 'Instagram',
     inputMode: 'username',
-    baseUrl: 'https://instagram.com',
+    urlPattern: 'https://www.instagram.com/{handle}/',
+    hosts: ['instagram.com'],
     placeholder: '@romrom_official',
-    description: '계정명으로 Instagram 링크를 만듭니다.',
+    description: 'instagram.com/계정명',
     iconName: 'instagram',
   },
   {
     id: 'x',
     label: 'X',
     inputMode: 'username',
-    baseUrl: 'https://x.com',
+    urlPattern: 'https://x.com/{handle}',
+    hosts: ['x.com', 'twitter.com'],
     placeholder: '@username',
-    description: '계정명으로 X 링크를 만듭니다.',
-    iconName: 'link',
+    description: 'x.com/계정명',
+    iconName: 'x',
   },
   {
     id: 'youtube',
     label: 'YouTube',
     inputMode: 'username',
-    baseUrl: 'https://youtube.com',
+    urlPattern: 'https://youtube.com/@{handle}',
+    hosts: ['youtube.com'],
+    handleLength: { min: 3, max: 30 },
     placeholder: '@username',
-    description: '핸들로 YouTube 채널 링크를 만듭니다.',
-    iconName: 'link',
+    description: 'youtube.com/@핸들 (3~30자)',
+    iconName: 'youtube',
   },
   {
     id: 'tiktok',
     label: 'TikTok',
     inputMode: 'username',
-    baseUrl: 'https://tiktok.com',
+    urlPattern: 'https://www.tiktok.com/@{handle}',
+    hosts: ['tiktok.com'],
     placeholder: '@username',
-    description: '계정명으로 TikTok 링크를 만듭니다.',
-    iconName: 'link',
+    description: 'tiktok.com/@계정명',
+    iconName: 'tiktok',
   },
   {
     id: 'linkedin',
     label: 'LinkedIn',
-    inputMode: 'fullUrl',
-    placeholder: 'linkedin.com/in/username',
-    description: '프로필 URL 전체를 입력합니다.',
+    inputMode: 'username',
+    urlPattern: 'https://linkedin.com/in/{handle}',
+    hosts: ['linkedin.com'],
+    placeholder: 'username',
+    description: 'linkedin.com/in/계정명',
     iconName: 'linkedin',
   },
   {
     id: 'github',
     label: 'GitHub',
-    inputMode: 'fullUrl',
-    placeholder: 'github.com/username',
-    description: 'GitHub 프로필 또는 저장소 URL을 입력합니다.',
+    inputMode: 'username',
+    urlPattern: 'https://github.com/{handle}',
+    hosts: ['github.com'],
+    placeholder: 'username',
+    description: 'github.com/계정명',
     iconName: 'github',
   },
   {
@@ -120,4 +134,6 @@ export interface UrlDraft {
   normalizedUrl: string;
   estimatedBytes: number;
   isValid: boolean;
+  /** 태그에서 읽어 온 행. 다른 앱이 쓴 레코드는 경고 없이 불러오므로(§2.1 T3) 경고 배지 대상이 아니다. */
+  fromTag?: boolean;
 }

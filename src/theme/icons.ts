@@ -8,6 +8,9 @@ import type { ImageSourcePropType } from 'react-native';
 /** 링크 유형별 아이콘 (03_링크유형선택.png) */
 export const LINK_TYPE_ICONS: Record<string, ImageSourcePropType> = {
   instagram: require('../assets/type_instagram.png'),
+  x: require('../assets/type_x.png'),
+  youtube: require('../assets/type_youtube.png'),
+  tiktok: require('../assets/type_tiktok.png'),
   linkedin: require('../assets/type_linkedin.png'),
   github: require('../assets/type_github.png'),
   custom: require('../assets/type_link.png'),

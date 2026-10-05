@@ -11,10 +11,13 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppPrimaryButton, AppSecondaryButton } from '@/components/AppButton';
 import { AppInfoCard } from '@/components/AppCards';
+import { DraggableLinkList } from '@/components/DraggableLinkList';
+import { WriteWaitingScreen } from '@/screens/WriteWaitingScreen';
+import { WriteFailureScreen } from '@/screens/WriteFailureScreen';
 import { AppCapacityGauge } from '@/components/AppCapacityGauge';
 import { CUSTOM_LINK_TYPE } from '@/models/linkType';
 import { useLinkWriter } from '@/state/LinkWriterContext';
-import { NfcService } from '@/nfc/nfcService';
+import { NfcService, type NfcWriteStage } from '@/nfc/nfcService';
 import { describeWarnings, warningsForLink } from '@/utils/linkWarnings';
 import { NdefSize } from '@/utils/ndefSize';
 import { hostOf } from '@/utils/urlNormalizer';
@@ -25,7 +28,7 @@ import type { RootStackParamList } from '@/navigation';
 type Props = NativeStackScreenProps<RootStackParamList, 'LinkEdit'>;
 
 export function LinkEditScreen({ navigation, route }: Props) {
-  const { links, replaceFromTag, clear, removeLink, setPrimary } = useLinkWriter();
+  const { links, capacity, replaceFromTag, clear, removeLink, setPrimary, reorder } = useLinkWriter();
   const [ready, setReady] = useState(false);
   const [reading, setReading] = useState(false);
   const [readError, setReadError] = useState<string | null>(null);
@@ -34,6 +37,20 @@ export function LinkEditScreen({ navigation, route }: Props) {
   const readCancellation = useRef<AbortController | null>(null);
   const mounted = useRef(false);
   const [writing, setWriting] = useState(false);
+  const [writeStage, setWriteStage] = useState<NfcWriteStage>('waiting');
+  const writePending = useRef(false);
+  const writeRequest = useRef(0);
+  const writeCancellation = useRef<AbortController | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [dragEpoch, setDragEpoch] = useState(0);
+
+  const cancelWrite = useCallback(() => {
+    ++writeRequest.current;
+    writeCancellation.current?.abort();
+    writeCancellation.current = null;
+    writePending.current = false;
+    setWriting(false);
+  }, []);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const onRead = useCallback(async () => {
@@ -77,6 +94,8 @@ export function LinkEditScreen({ navigation, route }: Props) {
   useEffect(() => {
     mounted.current = true;
     const unsubscribe = navigation.addListener('blur', () => {
+      setDragEpoch((value) => value + 1);
+      if (writePending.current) cancelWrite();
       ++readRequest.current;
       if (readPending.current) {
         readCancellation.current?.abort();
@@ -105,13 +124,17 @@ export function LinkEditScreen({ navigation, route }: Props) {
     }
     return () => {
       mounted.current = false;
+      ++writeRequest.current;
+      writeCancellation.current?.abort();
+      writeCancellation.current = null;
+      writePending.current = false;
       ++readRequest.current;
       if (readPending.current) readCancellation.current?.abort();
       readCancellation.current = null;
       readPending.current = false;
       unsubscribe();
     };
-  }, [navigation, route.params, clear, replaceFromTag, onRead]);
+  }, [navigation, route.params, clear, replaceFromTag, onRead, cancelWrite]);
 
   const urls = links.map((l) => l.normalizedUrl);
   const usedBytes = NdefSize.estimateMessageBytes(urls);
@@ -120,12 +143,12 @@ export function LinkEditScreen({ navigation, route }: Props) {
   const overCapacity = usedBytes > totalCapacity;
 
   const onAddLink = () => {
-    if (!ready || reading || writing || !navigation.isFocused()) return;
+    if (!ready || reading || writePending.current || dragging || !navigation.isFocused()) return;
     navigation.navigate('LinkTypeSelect');
   };
 
   const onEditLink = (index: number) => {
-    if (!ready || reading || writing || !navigation.isFocused()) return;
+    if (!ready || reading || writePending.current || dragging || !navigation.isFocused()) return;
     const link = links[index];
     if (link.linkType.inputMode === 'username') {
       navigation.navigate('InstagramInput', { editIndex: index });
@@ -134,29 +157,62 @@ export function LinkEditScreen({ navigation, route }: Props) {
     }
   };
 
+  const onPrimary = (index: number) => {
+    if (dragging || writePending.current || !navigation.isFocused()) return;
+    setPrimary(index);
+  };
+
   const onRemoveLink = (index: number) => {
+    if (dragging || writePending.current || !navigation.isFocused()) return;
     Alert.alert('링크 삭제', '이 링크를 목록에서 삭제할까요?', [
       { text: '취소', style: 'cancel' },
-      { text: '삭제', style: 'destructive', onPress: () => removeLink(index) },
+      { text: '삭제', style: 'destructive', onPress: () => {
+        if (!dragging && !writePending.current && navigation.isFocused()) removeLink(index);
+      } },
     ]);
   };
 
   const onSave = async () => {
-    if (!ready || reading || writing || !navigation.isFocused() || links.length === 0 || overCapacity) return;
+    if (!ready || reading || writePending.current || dragging || !navigation.isFocused() || links.length === 0 || overCapacity) return;
+    const request = ++writeRequest.current;
+    const cancellation = new AbortController();
+    writeCancellation.current = cancellation;
+    writePending.current = true; // 렌더 전 연속 탭도 한 번만 저장한다.
+    const snapshot = [...urls];
+    setWriteStage('waiting');
     setWriting(true);
     setErrorMsg(null);
-    const result = await NfcService.writeUrls(urls);
-    setWriting(false);
-
-    if (result.ok) {
-      navigation.navigate('WriteComplete', {
-        urls,
-        linkTypeId: links[0]?.linkType.id,
+    const active = () => mounted.current && request === writeRequest.current &&
+      !cancellation.signal.aborted && navigation.isFocused();
+    try {
+      const result = await NfcService.writeUrls(snapshot, {
+        signal: cancellation.signal,
+        onStage: (stage) => { if (active()) setWriteStage(stage); },
       });
-    } else if (result.reason !== 'cancelled') {
-      setErrorMsg(result.message);
+      if (!active()) return;
+      // 완료 이동의 blur에서 이미 끝난 요청을 취소하지 않도록 먼저 해제한다.
+      writePending.current = false;
+      writeCancellation.current = null;
+      setWriting(false);
+      if (result.ok) {
+        navigation.navigate('WriteComplete', { urls: snapshot, usedBytes: result.usedBytes });
+      } else if (result.reason !== 'cancelled') {
+        setErrorMsg(result.message);
+      }
+    } catch {
+      if (active()) setErrorMsg('쓰기를 완료하지 못했습니다. 편집 내용은 유지됩니다. 전체 재쓰기로 다시 기록해주세요.');
+    } finally {
+      if (mounted.current && request === writeRequest.current) {
+        writePending.current = false;
+        writeCancellation.current = null;
+        setWriting(false);
+      }
     }
   };
+
+  if (writing) return <WriteWaitingScreen stage={writeStage} onCancel={cancelWrite} />;
+  if (errorMsg) return <WriteFailureScreen message={errorMsg} links={links} capacity={capacity}
+    onRewrite={onSave} onEdit={() => setErrorMsg(null)} />;
 
   if (!ready) {
     return (
@@ -181,104 +237,96 @@ export function LinkEditScreen({ navigation, route }: Props) {
 
   return (
     <SafeAreaView style={styles.safe} edges={['bottom']}>
-      <ScrollView contentContainerStyle={styles.content}>
-        <Text style={AppText.headlineLarge}>링크를 편집하세요</Text>
-        <View style={{ height: AppSpacing.sm }} />
-        <Text style={AppText.bodyMedium}>
-          추가·삭제·수정 후 저장하면 태그에 기록됩니다.
-        </Text>
+      <DraggableLinkList links={links} cancelToken={dragEpoch}
+        onReorder={(from, to) => { if (navigation.isFocused() && !writePending.current) reorder(from, to); }}
+        onDragging={setDragging}
+        header={<>
+            <Text style={AppText.headlineLarge}>링크를 편집하세요</Text>
+            <View style={{ height: AppSpacing.sm }} />
+            <Text style={AppText.bodyMedium}>
+              추가·삭제·수정 후 저장하면 태그에 기록됩니다.
+            </Text>
 
-        <View style={{ height: AppSpacing.lg }} />
-        <AppCapacityGauge used={usedBytes} total={totalCapacity} linkCount={links.length} />
+            <View style={{ height: AppSpacing.lg }} />
+            <AppCapacityGauge used={usedBytes} total={totalCapacity} linkCount={links.length} />
 
-        <View style={{ height: AppSpacing.lg }} />
+            <View style={{ height: AppSpacing.lg }} />
 
-        {links.length === 0 ? (
-          <AppInfoCard
-            title="링크 없음"
-            message="아래 '링크 추가'로 첫 번째 링크를 만들어보세요."
-            variant="neutral"
-          />
-        ) : (
-          links.map((link, index) => {
-            const isPrimary = index === 0;
-            // 경고는 배지일 뿐 저장을 막지 않는다 (K17). 다른 행이 바뀌면 중복 여부가 달라지므로 매번 계산한다.
-            const warnings = warningsForLink(links, index);
-            return (
-              <View key={`${link.linkType.id}-${index}`}>
-                <View style={styles.linkRow}>
-                  <Pressable style={styles.linkMain} onPress={() => onEditLink(index)}>
-                    <Image
-                      source={linkTypeIcon(link.linkType.id)}
-                      style={styles.linkIcon}
-                      resizeMode="contain"
-                    />
-                    <View style={styles.linkTextCol}>
-                      <View style={styles.linkTitleRow}>
-                        {/* 기타는 서비스 개념이 없다 — 전부 "직접 입력"으로 보이면 여러 개를 구분할 수 없다 (F6) */}
-                        <Text style={styles.linkTitle}>
-                          {link.linkType.id === CUSTOM_LINK_TYPE.id ? hostOf(link.normalizedUrl) : link.linkType.label}
-                        </Text>
-                        {isPrimary ? (
-                          <View style={styles.primaryBadge}>
-                            <Text style={styles.primaryBadgeText}>대표 · 탭하면 이 링크가 열립니다</Text>
-                          </View>
-                        ) : null}
-                      </View>
-                      <Text style={styles.linkUrl} numberOfLines={1}>
-                        {link.normalizedUrl}
+          {links.length === 0 ? <AppInfoCard title="링크 없음" message="아래 '링크 추가'로 첫 번째 링크를 만들어보세요." variant="neutral" /> : null}
+        </>}
+        renderRow={(link, index) => {
+          const isPrimary = index === 0;
+          // 경고는 배지일 뿐 저장을 막지 않는다 (K17). 다른 행이 바뀌면 중복 여부가 달라지므로 매번 계산한다.
+          const warnings = warningsForLink(links, index);
+          return (
+            <View>
+              <View style={styles.linkRow}>
+                <Pressable style={styles.linkMain} onPress={() => onEditLink(index)}>
+                  <Image
+                    source={linkTypeIcon(link.linkType.id)}
+                    style={styles.linkIcon}
+                    resizeMode="contain"
+                  />
+                  <View style={styles.linkTextCol}>
+                    <View style={styles.linkTitleRow}>
+                      {/* 기타는 서비스 개념이 없다 — 전부 "직접 입력"으로 보이면 여러 개를 구분할 수 없다 (F6) */}
+                      <Text style={styles.linkTitle}>
+                        {link.linkType.id === CUSTOM_LINK_TYPE.id ? hostOf(link.normalizedUrl) : link.linkType.label}
                       </Text>
+                      {isPrimary ? (
+                        <View style={styles.primaryBadge}>
+                          <Text style={styles.primaryBadgeText}>대표 · 탭하면 이 링크가 열립니다</Text>
+                        </View>
+                      ) : null}
                     </View>
-                  </Pressable>
+                    <Text style={styles.linkUrl} numberOfLines={1}>
+                      {link.normalizedUrl}
+                    </Text>
+                  </View>
+                </Pressable>
 
-                  <View style={styles.linkActions}>
-                    {!isPrimary ? (
-                      <Pressable style={styles.actionBtn} onPress={() => setPrimary(index)}>
-                        <Text style={styles.actionBtnText}>대표 지정</Text>
-                      </Pressable>
-                    ) : null}
-                    <Pressable style={styles.deleteBtn} onPress={() => onRemoveLink(index)}>
-                      <Text style={styles.deleteBtnText}>삭제</Text>
+                <View style={styles.linkActions}>
+                  {!isPrimary ? (
+                    <Pressable style={styles.actionBtn} onPress={() => onPrimary(index)}>
+                      <Text style={styles.actionBtnText}>대표 지정</Text>
                     </Pressable>
-                  </View>
+                  ) : null}
+                  <Pressable style={styles.deleteBtn} onPress={() => onRemoveLink(index)}>
+                    <Text style={styles.deleteBtnText}>삭제</Text>
+                  </Pressable>
                 </View>
-                {warnings.length > 0 ? (
-                  <View style={{ marginTop: AppSpacing.sm }}>
-                    <AppInfoCard {...describeWarnings(warnings)} variant="warning" />
-                  </View>
-                ) : null}
-                <View style={{ height: AppSpacing.itemGap }} />
               </View>
-            );
-          })
-        )}
+              {warnings.length > 0 ? (
+                <View style={{ marginTop: AppSpacing.sm }}>
+                  <AppInfoCard {...describeWarnings(warnings)} variant="warning" />
+                </View>
+              ) : null}
+              <View style={{ height: AppSpacing.itemGap }} />
+            </View>
+          );
+        }}
+        footer={<>
+            <AppSecondaryButton label="링크 추가" onPress={onAddLink} />
 
-        <AppSecondaryButton label="링크 추가" onPress={onAddLink} />
+            {overCapacity ? (
+              <>
+                <View style={{ height: 14 }} />
+                <AppInfoCard
+                  title="용량 초과"
+                  message="태그 용량을 초과했습니다. 링크를 줄여야 저장할 수 있습니다."
+                  variant="error"
+                />
+              </>
+            ) : null}
 
-        {overCapacity ? (
-          <>
-            <View style={{ height: 14 }} />
-            <AppInfoCard
-              title="용량 초과"
-              message="태그 용량을 초과했습니다. 링크를 줄여야 저장할 수 있습니다."
-              variant="error"
-            />
-          </>
-        ) : null}
-
-        {errorMsg ? (
-          <>
-            <View style={{ height: 14 }} />
-            <AppInfoCard title="저장 실패" message={errorMsg} variant="error" />
-          </>
-        ) : null}
-      </ScrollView>
+        </>}
+      />
 
       <View style={styles.footer}>
         <AppPrimaryButton
-          label={writing ? '태그를 대세요…' : '저장'}
+          label="저장"
           onPress={onSave}
-          disabled={!ready || reading || links.length === 0 || overCapacity}
+          disabled={!ready || reading || dragging || links.length === 0 || overCapacity}
           loading={writing}
         />
       </View>

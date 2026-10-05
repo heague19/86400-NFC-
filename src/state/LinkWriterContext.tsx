@@ -11,9 +11,17 @@ import { CUSTOM_LINK_TYPE, detectLinkTypeFromUrl } from '@/models/linkType';
 import { NdefSize } from '@/utils/ndefSize';
 import { extractPresetHandle } from '@/utils/urlNormalizer';
 
+export interface WriterLink extends UrlDraft {
+  /** 편집 세션 내 행 식별자. URL 중복과 수정에도 유지한다. */
+  rowId: string;
+}
+
+let nextRowId = 0;
+const rowId = () => `link-${++nextRowId}`;
+
 interface LinkWriterContextValue {
   /** 태그에 쓸 링크 목록. 0번이 항상 대표(대표 개념 없는 "빈 목록" 상태만 예외). */
-  links: UrlDraft[];
+  links: WriterLink[];
   /** 현재 편집 중인 태그에서 조회한 실제 용량. 입력 화면에 다녀와도 유지한다. */
   capacity: number | undefined;
   /** 새 태그의 전체 URL로 교체. 읽은 문자열과 순서, 중복을 그대로 보존한다. */
@@ -29,7 +37,7 @@ interface LinkWriterContextValue {
   removeLink: (index: number) => void;
   /** 해당 인덱스를 대표로 지정 — 배열 맨 앞으로 이동 */
   setPrimary: (index: number) => void;
-  /** 드래그 등으로 순서만 바꾸기 (대표 여부는 index 0 그대로 유지) */
+  /** 드래그로 비대표 순서만 바꾸기. 0번으로/0번에서 이동은 무시한다 */
   reorder: (fromIndex: number, toIndex: number) => void;
   clear: () => void;
 }
@@ -37,7 +45,7 @@ interface LinkWriterContextValue {
 const LinkWriterContext = createContext<LinkWriterContextValue | undefined>(undefined);
 
 export function LinkWriterProvider({ children }: { children: React.ReactNode }) {
-  const [links, setLinks] = useState<UrlDraft[]>([]);
+  const [links, setLinks] = useState<WriterLink[]>([]);
   const [capacity, setCapacity] = useState<number | undefined>(undefined);
   const [selectedLinkType, setSelectedLinkType] = useState<LinkType | null>(null);
 
@@ -47,6 +55,7 @@ export function LinkWriterProvider({ children }: { children: React.ReactNode }) 
       // 계정명 화면으로 열면 엉뚱한 URL이 조립된다. 계정 페이지가 아니면 기타로 둔다. 문자열·순서는 그대로.
       const detected = detectLinkTypeFromUrl(url);
       return {
+        rowId: rowId(),
         linkType: detected && extractPresetHandle(detected, url) !== null ? detected : CUSTOM_LINK_TYPE,
         originalInput: url,
         normalizedUrl: url,
@@ -64,11 +73,11 @@ export function LinkWriterProvider({ children }: { children: React.ReactNode }) 
   }, []);
 
   const addLink = useCallback((draft: UrlDraft) => {
-    setLinks((prev) => [...prev, draft]);
+    setLinks((prev) => [...prev, { ...draft, rowId: rowId() }]);
   }, []);
 
   const updateLink = useCallback((index: number, draft: UrlDraft) => {
-    setLinks((prev) => prev.map((item, i) => (i === index ? draft : item)));
+    setLinks((prev) => prev.map((item, i) => (i === index ? { ...draft, rowId: item.rowId } : item)));
   }, []);
 
   const removeLink = useCallback((index: number) => {
@@ -88,9 +97,11 @@ export function LinkWriterProvider({ children }: { children: React.ReactNode }) 
   const reorder = useCallback((fromIndex: number, toIndex: number) => {
     setLinks((prev) => {
       if (
+        !Number.isInteger(fromIndex) ||
+        !Number.isInteger(toIndex) ||
         fromIndex === toIndex ||
-        fromIndex < 0 ||
-        toIndex < 0 ||
+        fromIndex <= 0 ||
+        toIndex <= 0 ||
         fromIndex >= prev.length ||
         toIndex >= prev.length
       ) {

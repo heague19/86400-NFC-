@@ -89,10 +89,11 @@ const tokens = load('src/theme/tokens.ts', {});
 let reads = 0;
 let writes = [];
 let readResult;
+let writeResult;
 const service = { NfcService: {
   isSupported: async () => true,
   readUrl: async (signal) => { ++reads; return typeof readResult === 'function' ? readResult(signal) : readResult; },
-  writeUrls: async (urls) => { writes.push(urls); return { ok: true, message: 'saved' }; },
+  writeUrls: async (urls, options) => { writes.push(urls); return writeResult ? writeResult(urls, options) : { ok: true, message: 'saved', usedBytes: require('react-native-nfc-manager/ndef-lib').encodeMessage(urls.map((u) => require('react-native-nfc-manager/ndef-lib').uriRecord(u))).length }; },
 } };
 const placeholders = (...names) => Object.fromEntries(names.map((name) => [name, name]));
 const imports = {
@@ -103,6 +104,7 @@ const imports = {
   'expo-clipboard': {},
   '@/components/AppButton': placeholders('AppPrimaryButton', 'AppSecondaryButton'),
   '@/components/AppCards': placeholders('AppInfoCard', 'AppActionCard'),
+  '@/components/DraggableLinkList': { DraggableLinkList: 'DraggableLinkList' },
   '@/components/AppCapacityGauge': placeholders('AppCapacityGauge'),
   '@/components/AppRingBadge': placeholders('AppRingBadge'),
   '@/components/AppTextField': placeholders('AppTextField'),
@@ -115,14 +117,19 @@ const imports = {
   '@/theme/icons': { APP_ICONS: {}, APP_LOGO: {}, linkTypeIcon: () => 1 },
   '@/theme/tokens': tokens,
 };
+for (const name of ['WriteWaiting', 'WriteFailure']) {
+  imports[`@/screens/${name}Screen`] = load(`src/screens/${name}Screen.tsx`, imports);
+}
 const screens = {};
-for (const name of ['Home', 'LinkEdit', 'TagRead', 'LinkTypeSelect', 'InstagramInput', 'CustomUrlInput']) {
+for (const name of ['Home', 'LinkEdit', 'TagRead', 'LinkTypeSelect', 'InstagramInput', 'CustomUrlInput', 'WriteComplete']) {
   screens[name] = load(`src/screens/${name}Screen.tsx`, imports)[`${name}Screen`];
 }
 
 function nodes(tree) {
   if (!tree || typeof tree !== 'object') return [];
   if (Array.isArray(tree)) return tree.flatMap(nodes);
+  if (tree.type === 'DraggableLinkList') return [tree, ...nodes(tree.props.header), ...tree.props.links.flatMap((l, i) => nodes(tree.props.renderRow(l, i))), ...nodes(tree.props.footer)];
+  if (typeof tree.type === 'function' && tree.type.name.endsWith('Screen')) return [tree, ...nodes(tree.type(tree.props))];
   return [tree, ...nodes(tree.props?.children)];
 }
 
@@ -152,6 +159,7 @@ class Harness {
         this.listeners.get(key).add(fn);
         return () => this.listeners.get(key).delete(fn);
       },
+      reset: (state) => this.dispatch({ type: 'RESET', payload: state }),
       navigate: (name, params) => this.dispatch({ type: 'NAVIGATE', payload: { name, params } }),
       popTo: (...args) => this.dispatch(StackActions.popTo(...args)),
       replace: (name, params) => this.dispatch(StackActions.replace(name, params)),
@@ -161,7 +169,7 @@ class Harness {
     const previous = this.route;
     const next = this.router.getStateForAction(this.stack, action, this.options);
     assert.ok(next, `Rejected navigation: ${action.type}`);
-    this.stack = next;
+    this.stack = this.router.getRehydratedState(next, this.options);
     if (previous.key !== this.route.key) for (const fn of this.listeners.get(previous.key) ?? []) fn();
     this.sync();
     this.flush();
@@ -545,10 +553,140 @@ const contextUrls = (h) => h.context.links.map((l) => l.normalizedUrl);
     assert.equal(edit.disabled, true); edit.onPress(); assert.equal(h.route.name, 'TagRead'); h.dispose();
   }
 
+  // 3-9: 실제 provider의 행 ID/순서/대표 불변식 + 실제 터치 responder/레이아웃 핸들러.
+  readResult = success(['https://a.co', 'https://dup.co', 'https://dup.co', 'https://d.co'], 137);
+  h = new Harness(); h.enterEdit(); await h.settle();
+  const ids = h.context.links.map((l) => l.rowId);
+  assert.equal(new Set(ids).size, 4, 'Duplicate URLs have distinct row IDs');
+  h.context.reorder(0, 3); h.context.reorder(3, 0);
+  h.context.reorder(NaN, 2); h.context.reorder(1.5, 2); h.context.reorder(1, Infinity); h.flush();
+  assert.deepEqual(h.context.links.map((l) => l.rowId), ids, 'Drag cannot move or replace the primary');
+  h.context.reorder(1, 2); h.flush();
+  assert.deepEqual(h.context.links.map((l) => l.rowId), [ids[0], ids[2], ids[1], ids[3]], 'Duplicate rows can reorder independently');
+  h.context.updateLink(2, { ...h.context.links[2], normalizedUrl: 'https://edit.co' }); h.flush();
+  assert.equal(h.context.links[2].rowId, ids[1], 'Editing keeps identity');
+  h.context.setPrimary(2); h.flush();
+  assert.equal(h.context.links[0].rowId, ids[1], 'Explicit selection changes primary');
+  h.context.removeLink(0); h.flush();
+  assert.equal(h.context.links[0].rowId, ids[0], 'Deleting primary promotes the next row');
+  h.context.addLink({ ...h.context.links[1] }); h.flush();
+  assert.equal(new Set(h.context.links.map((l) => l.rowId)).size, 4, 'Add always allocates a new identity');
+
+  const dragImports = { react: React, 'react-native': { ...imports['react-native'],
+    PanResponder: { create: (handlers) => ({ panHandlers: handlers }) } }, '@/theme/tokens': tokens };
+  const { DraggableLinkList } = load('src/components/DraggableLinkList.tsx', dragImports);
+  const drops = [], scrolling = [], draggingStates = [];
+  const dragHost = new HookHost(h, DraggableLinkList, { links: h.context.links, cancelToken: 0,
+    header: null, footer: null, renderRow: () => null,
+    onReorder: (...args) => { drops.push(args); h.context.reorder(...args); h.flush(); },
+    onDragging: (value) => draggingStates.push(value) });
+  dragHost.render();
+  dragHost.tree.props.ref.current = { measureInWindow: (fn) => fn(0, 100, 300, 300) };
+  const scrollNode = nodes(dragHost.tree).find((n) => n.type === 'ScrollView');
+  scrollNode.props.ref.current = { scrollTo: (v) => scrolling.push(v.y) };
+  scrollNode.props.onLayout({ nativeEvent: { layout: { height: 300 } } });
+  scrollNode.props.onContentSizeChange(300, 1000);
+  const rowNodes = nodes(dragHost.tree).filter((n) => n.type === 'View' && n.props.key);
+  const heights = [50, 70, 90, 110]; let y = 0;
+  rowNodes.forEach((row, i) => { row.props.onLayout({ nativeEvent: { layout: { y, height: heights[i] } } }); y += heights[i]; });
+  const listNode = nodes(dragHost.tree).find((n) => n.type === 'View' && n.props.onLayout && !n.props.key);
+  listNode.props.onLayout({ nativeEvent: { layout: { y: 0 } } });
+  const handles = nodes(dragHost.tree).filter((n) => typeof n.type === 'function');
+  const handleHost = (i) => { const host = new HookHost(h, handles[i].type, handles[i].props); host.render(); return host; };
+  const primaryHandle = handleHost(0);
+  assert.equal(primaryHandle.tree.props.onStartShouldSetPanResponder(), false, 'Primary handle cannot start dragging');
+  const handle = handleHost(1).tree.props;
+  const event = (pageY) => ({ nativeEvent: { pageY } });
+  assert.equal(handle.onStartShouldSetPanResponder(), true);
+  handle.onPanResponderGrant(event(185)); handle.onPanResponderMove(event(365)); handle.onPanResponderRelease(event(365));
+  assert.deepEqual(drops, [[1, 3]], 'Actual touch handle resolves unequal-height row drop');
+  assert.equal(h.context.links[0].rowId, ids[0]);
+  handle.onPanResponderGrant(event(185)); handle.onPanResponderMove(event(365)); handle.onPanResponderTerminate();
+  assert.equal(drops.length, 1, 'Responder termination cancels drop');
+  handle.onPanResponderGrant(event(185)); handle.onPanResponderMove(event(399));
+  await new Promise((resolve) => setTimeout(resolve, 55));
+  assert.ok(scrolling.length >= 2 && scrolling.at(-1) > scrolling[0], 'Dragging near edge scrolls repeatedly');
+  handle.onPanResponderTerminate();
+  handle.onPanResponderGrant(event(185));
+  rowNodes[2].props.onLayout({ nativeEvent: { layout: { y: 120, height: 130 } } });
+  handle.onPanResponderRelease(event(365));
+  assert.equal(drops.length, 1, 'Height changes safely cancel drop');
+  handle.onPanResponderGrant(event(185)); handle.onPanResponderRelease(event(900));
+  assert.equal(drops.length, 1, 'Dropping outside viewport cancels');
+  handle.onPanResponderGrant(event(185)); dragHost.props = { ...dragHost.props, cancelToken: 1 }; dragHost.render();
+  handle.onPanResponderRelease(event(365)); assert.equal(drops.length, 1, 'Screen departure cancels drag');
+  dragHost.dispose(); primaryHandle.dispose();
+  assert.equal(draggingStates.at(-1), false); h.dispose();
+
+  // 3-10~12: 실제 저장 핸들러의 즉시 대기/중복 탭/후행 결과/실패 보존/이어쓰기.
+  readResult = success(['https://a.co', 'https://b.co'], 137);
+  h = new Harness(); h.enterEdit(); await h.settle();
+  const originalKey = h.route.key, savedIds = h.context.links.map((l) => l.rowId);
+  let pendingWrite = deferred(), writeOptions;
+  writeResult = (_urls, opts) => { writeOptions = opts; return pendingWrite.promise; };
+  const saveHandler = h.find('AppPrimaryButton', (p) => p.label === '저장').onPress;
+  const firstSave = saveHandler(); saveHandler(); h.flush();
+  assert.equal(writes.length, 1, 'Synchronous duplicate save starts only one session');
+  assert.equal(h.find(imports['@/screens/WriteWaitingScreen'].WriteWaitingScreen).stage, 'waiting');
+  writeOptions.onStage('writing'); h.flush();
+  assert.equal(h.find(imports['@/screens/WriteWaitingScreen'].WriteWaitingScreen).stage, 'writing');
+  writeOptions.onStage('verifying'); h.flush();
+  assert.equal(h.find(imports['@/screens/WriteWaitingScreen'].WriteWaitingScreen).stage, 'verifying');
+  assert.equal(h.route.name, 'LinkEdit', 'Verifying is never success');
+  pendingWrite.resolve({ ok: false, reason: 'verify_mismatch', message: '일부만 기록되었을 수 있습니다.' });
+  await firstSave; await h.settle();
+  const failure = h.find(imports['@/screens/WriteFailureScreen'].WriteFailureScreen);
+  assert.equal(failure.capacity, 137); assert.equal(failure.links[0].rowId, savedIds[0]);
+  assert.ok(failure.message.includes('일부만'));
+  assert.ok(!JSON.stringify(h.editor.tree).includes('verify_mismatch'), 'No raw error code in UI');
+  assert.equal(writes.length, 1, 'Failure does not auto-retry');
+  pendingWrite = deferred(); const rewrite = h.press('전체 재쓰기');
+  assert.deepEqual(writes[1], writes[0], 'Whole rewrite keeps full ordered message');
+  const continuationUrls = [...contextUrls(h)];
+  pendingWrite.resolve({ ok: true, message: 'saved', usedBytes: 47 });
+  await rewrite; await h.settle();
+  assert.equal(h.route.name, 'WriteComplete'); assert.equal(h.route.params.usedBytes, 47);
+  assert.ok(nodes(h.editor.tree).some((n) => n.type === 'Text' && n.props.children.includes(47)), 'Completion displays service bytes');
+  assert.ok(!nodes(h.editor.tree).some((n) => n.props.label === '확인'));
+  h.press('링크 더 추가하기');
+  assert.equal(h.route.name, 'LinkTypeSelect'); assert.equal(reads, 1);
+  assert.deepEqual(contextUrls(h), continuationUrls); assert.equal(h.context.capacity, 137);
+  assert.deepEqual(h.context.links.map((l) => l.rowId), savedIds, 'Continuation preserves exact primary and row identities');
+  h.find('AppActionCard', (p) => p.title === 'X').onPress(); h.flush();
+  h.find('AppTextField').onChangeText('next'); h.flush(); h.press('다음');
+  assert.equal(h.route.key, originalKey); assert.equal(reads, 1);
+  assert.deepEqual(contextUrls(h), [...continuationUrls, 'https://x.com/next']); assert.equal(h.context.capacity, 137);
+  pendingWrite = deferred(); const continuation = h.press('저장');
+  assert.equal(writes.length, 3, 'Continuation starts a new NFC write (requires tag contact)');
+  pendingWrite.resolve({ ok: true, message: 'saved', usedBytes: 70 }); await continuation; await h.settle();
+  h.press('완료'); assert.equal(h.route.name, 'Home');
+  readResult = success(['https://new.co'], 512); h.enterEdit(); await h.settle();
+  assert.equal(reads, 2); assert.deepEqual(contextUrls(h), ['https://new.co']); assert.equal(h.context.capacity, 512);
+  h.dispose();
+
+  for (const departure of ['cancel', 'blur', 'unmount', 'reject']) {
+    h = new Harness(); h.enterEdit(); await h.settle(); pendingWrite = deferred();
+    const saving = h.press('저장'); const oldOptions = writeOptions;
+    if (departure === 'cancel') h.press('취소');
+    else if (departure === 'blur') { h.dispatch({ type: 'NAVIGATE', payload: { name: 'LinkTypeSelect' } }); h.back(); }
+    else if (departure === 'unmount') h.back();
+    if (departure !== 'reject') assert.equal(oldOptions.signal.aborted, true, `${departure}: request aborts`);
+    oldOptions.onStage('verifying');
+    if (departure === 'reject') pendingWrite.reject(new Error('boundary failed'));
+    else pendingWrite.resolve({ ok: true, message: 'late', usedBytes: 10 });
+    await saving; await h.settle();
+    assert.notEqual(h.route.name, 'WriteComplete', `${departure}: no late success navigation`);
+    if (departure === 'reject') assert.ok(h.find(imports['@/screens/WriteFailureScreen'].WriteFailureScreen));
+    h.dispose();
+  }
+  writeResult = undefined;
+
   // Run the actual service with the actual editor; only the native NFC boundary is mocked.
   const Ndef = require('react-native-nfc-manager/ndef-lib');
   let nativeTag, holdRequest = false, pendingNativeRequest, cleanupGate;
   let nativeRequests = 0, nativeCancels = 0;
+  let nativeWritten, nativeWriteGate, nativeVerifyGate, nativeMismatch = false;
+  const nativeWriteMessages = [];
   const nativeManager = {
     isSupported: async () => true, start: async () => {}, isEnabled: async () => true,
     requestTechnology: async () => {
@@ -564,7 +702,21 @@ const contextUrls = (h) => h.context.links.map((l) => l.normalizedUrl);
       await cleanupGate?.promise;
     },
     getTag: async () => nativeTag,
-    ndefHandler: { getNdefStatus: async () => ({ status: 2, capacity: 137 }) },
+    ndefHandler: {
+      getNdefStatus: async () => ({ status: 2, capacity: 137 }),
+      writeNdefMessage: async (bytes, config) => {
+        assert.deepEqual(config, { reconnectAfterWrite: true });
+        nativeWritten = bytes; nativeWriteMessages.push([...bytes]);
+        await nativeWriteGate?.promise;
+      },
+      getNdefMessage: async () => {
+        await nativeVerifyGate?.promise;
+        const records = Ndef.decodeMessage(nativeWritten);
+        return { ndefMessage: (nativeMismatch ? records.slice(1) : records).map((record) => ({
+          ...record, type: Ndef.util.stringToBytes(record.type), id: Ndef.util.bytesToHexString(record.id),
+        })) };
+      },
+    },
   };
   const actualService = load('src/nfc/nfcService.ts', {
     'react-native': { Platform: { OS: 'android' } },
@@ -620,6 +772,66 @@ const contextUrls = (h) => h.context.links.map((l) => l.normalizedUrl);
     assert.equal(pendingNativeRequest, otherPending);
     otherPending.resolve(); assert.equal((await otherRead).ok, true);
   }
+  // Actual editor + actual service: only native transport is stubbed.
+  holdRequest = false;
+  nativeTag = { ndefMessage: [Ndef.uriRecord('https://a.co'), Ndef.uriRecord('https://a.co')] };
+  writeResult = (urls, opts) => actualService.writeUrls(urls, opts);
+  h = new Harness(); h.enterEdit(); await h.settle();
+  const integratedKey = h.route.key, integratedIds = h.context.links.map((l) => l.rowId);
+  const requestedBeforeSave = nativeRequests;
+  nativeWriteGate = deferred(); nativeVerifyGate = deferred(); nativeMismatch = true;
+  const integratedSave = h.find('AppPrimaryButton', (p) => p.label === '저장').onPress;
+  const integratedPending = integratedSave(); integratedSave(); h.flush(); await h.settle();
+  assert.equal(nativeRequests, requestedBeforeSave + 1, 'Actual service opens one write session for duplicate taps');
+  assert.equal(h.find(imports['@/screens/WriteWaitingScreen'].WriteWaitingScreen).stage, 'writing');
+  nativeWriteGate.resolve(); nativeWriteGate = undefined; await h.settle();
+  assert.equal(h.find(imports['@/screens/WriteWaitingScreen'].WriteWaitingScreen).stage, 'verifying');
+  assert.equal(h.route.name, 'LinkEdit');
+  nativeVerifyGate.resolve(); nativeVerifyGate = undefined; await integratedPending; await h.settle();
+  assert.ok(h.find(imports['@/screens/WriteFailureScreen'].WriteFailureScreen).message.includes('일부만'));
+  assert.equal(h.context.capacity, 137); assert.deepEqual(h.context.links.map((l) => l.rowId), integratedIds);
+  const mismatchWriteCount = nativeWriteMessages.length;
+  await h.settle(); assert.equal(nativeWriteMessages.length, mismatchWriteCount, 'Mismatch never auto-retries');
+  nativeMismatch = false;
+  await h.press('전체 재쓰기'); await h.settle();
+  assert.equal(h.route.name, 'WriteComplete');
+  assert.deepEqual(nativeWriteMessages.at(-1), nativeWriteMessages.at(-2), 'Native recovery rewrites all original records');
+  assert.equal(h.route.params.usedBytes, nativeWriteMessages.at(-1).length);
+  const readCountBeforeContinue = reads;
+  h.press('링크 더 추가하기');
+  h.find('AppActionCard', (p) => p.title === 'GitHub').onPress(); h.flush();
+  h.find('AppTextField').onChangeText('more'); h.flush(); h.press('다음');
+  assert.equal(h.route.key, integratedKey); assert.equal(reads, readCountBeforeContinue);
+  assert.equal(h.context.capacity, 137); assert.equal(h.context.links[0].rowId, integratedIds[0]);
+  const requestsBeforeContinue = nativeRequests;
+  await h.press('저장'); await h.settle();
+  assert.equal(nativeRequests, requestsBeforeContinue + 1, 'Continuation requires a fresh native tag session');
+  assert.deepEqual(Ndef.decodeMessage(nativeWriteMessages.at(-1)).map((r) => Ndef.uri.decodePayload(r.payload)),
+    ['https://a.co', 'https://a.co', 'https://github.com/more']);
+  h.press('완료'); nativeTag = { ndefMessage: [] }; h.enterEdit(); await h.settle();
+  assert.deepEqual(contextUrls(h), [], 'Home then blank tag replaces prior continuation list');
+  assert.equal(h.context.capacity, 137); h.dispose(); writeResult = undefined;
+  // Cancelled native write may finish after a newer save; it must not close/move that save.
+  nativeTag = { ndefMessage: [Ndef.uriRecord('https://new.co')] };
+  writeResult = (urls, opts) => actualService.writeUrls(urls, opts);
+  h = new Harness(); h.enterEdit(); await h.settle();
+  const oldWriteGate = nativeWriteGate = deferred();
+  const staleSave = h.press('저장'); await h.settle();
+  cleanupGate = deferred(); h.press('취소'); h.flush();
+  const beforeNewRequest = nativeRequests;
+  nativeWriteGate = undefined; nativeVerifyGate = deferred();
+  const newSave = h.press('저장'); await h.settle();
+  assert.equal(nativeRequests, beforeNewRequest, 'New write waits for aborted native cleanup');
+  cleanupGate.resolve(); cleanupGate = undefined; await h.settle();
+  assert.equal(nativeRequests, beforeNewRequest + 1);
+  const cancelsBeforeOldReturn = nativeCancels;
+  oldWriteGate.resolve(); await staleSave; await h.settle();
+  assert.equal(nativeCancels, cancelsBeforeOldReturn, 'Old finally cannot close newer native session');
+  assert.equal(h.route.name, 'LinkEdit');
+  assert.equal(h.find(imports['@/screens/WriteWaitingScreen'].WriteWaitingScreen).stage, 'verifying', 'Old result cannot end new verification');
+  nativeVerifyGate.resolve(); nativeVerifyGate = undefined; await newSave; await h.settle();
+  assert.equal(h.route.name, 'WriteComplete'); h.dispose(); writeResult = undefined;
+  console.log('PASS: native touch drag + unequal rows/autoscroll/cancel/height changes; duplicate IDs/primary invariants; real save handlers/stages/duplicate taps/cancel/late results; native mismatch -> full rewrite -> verified completion bytes; continuation read=0/identity/capacity preserved; Home new tag reset');
   console.log('PASS: actual Home/TagRead/editor/provider/input handlers and installed StackRouter; reads 1/0/0; retained edits/capacity; full replacement/blank tags; URL order/duplicates/strings; failures/cancel; unmount/blur/newer-read races');
   console.log('PASS: actual service/editor []/TNF_EMPTY replacement, null tag blocks editing/saving, pending native read cancellation on back/blur/unmount, cleanup before retry, completed editor preserves another session, constant gauge retained for 4-1');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

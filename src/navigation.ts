@@ -13,5 +13,5 @@ export type RootStackParamList = {
   LinkEdit: { urls: string[]; capacity?: number; writable?: boolean } | undefined;
   TagRead: undefined;
   TagInfo: { url: string; linkTypeId?: string; writable: boolean; capacity?: number };
-  WriteComplete: { urls: string[]; linkTypeId?: string };
+  WriteComplete: { urls: string[]; usedBytes: number };
 };

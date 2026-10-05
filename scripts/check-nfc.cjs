@@ -47,6 +47,7 @@ const manager = {
   requestTechnology: async () => {
     events.push('request');
     if (options.requestError) throw new Error('cancelled');
+    await options.requestGate?.promise;
   },
   cancelTechnologyRequest: async () => {
     events.push('cancel');
@@ -60,6 +61,7 @@ const manager = {
   ndefHandler: {
     getNdefStatus: async () => {
       events.push('status');
+      await options.statusGate?.promise;
       if (options.statusError) throw new Error('status query failed');
       if (options.nativeStatusError) return androidHandler.getNdefStatus();
       return Object.hasOwn(options, 'status') ? options.status : { status: 2, capacity: 512 };
@@ -68,10 +70,12 @@ const manager = {
       events.push('write');
       assert.deepEqual(config, { reconnectAfterWrite: true });
       written = bytes;
+      await options.writeGate?.promise;
       if (options.writeError) throw new Error('tag lost');
     },
     getNdefMessage: async () => {
       events.push('fresh');
+      await options.freshGate?.promise;
       if (options.freshError) throw new Error('NDEF read failed');
       if (options.freshNull) return null;
       const records = toNative(Ndef.decodeMessage(written));
@@ -198,6 +202,45 @@ async function run(settings = {}, read = false, urls = ['https://example.com']) 
     assert.equal((await NfcService.readUrl()).reason, reason);
     assert.deepEqual(events, [], 'Unavailable NFC must not open a session');
   }
+  // Native API boundaries, not timers, drive stage callbacks and reported bytes.
+  const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
+  const settle = () => new Promise(setImmediate);
+  options = { requestGate: deferred(), writeGate: deferred(), freshGate: deferred() }; events = [];
+  const stages = [];
+  const input = ['https://example.com/한글', 'https://example.com/한글'];
+  const original = [...input];
+  const writing = NfcService.writeUrls(input, { onStage: (stage) => stages.push(stage) });
+  await settle();
+  assert.deepEqual(stages, ['waiting']); assert.equal(events.includes('write'), false);
+  input[0] = 'https://changed.example';
+  options.requestGate.resolve(); await settle();
+  assert.deepEqual(stages, ['waiting', 'writing']); assert.equal(events.includes('fresh'), false);
+  options.writeGate.resolve(); await settle();
+  assert.deepEqual(stages, ['waiting', 'writing', 'verifying']);
+  assert.equal(events.includes('cancel'), false, 'Session is open while verification waits');
+  options.freshGate.resolve(); const verified = await writing;
+  assert.equal(verified.ok, true);
+  const expected = Ndef.encodeMessage(original.map((u) => Ndef.uriRecord(u)));
+  assert.deepEqual(written, expected, 'Full message snapshot preserves duplicates and UTF-8');
+  assert.equal(verified.usedBytes, expected.length, 'Final bytes come from actual encoded write');
+  assert.equal(events.filter((e) => e === 'request').length, 1);
+
+  for (const [gateName, expectedStages, laterEvent] of [
+    ['requestGate', ['waiting'], 'status'], ['statusGate', ['waiting'], 'write'],
+    ['writeGate', ['waiting', 'writing'], 'fresh'], ['freshGate', ['waiting', 'writing', 'verifying'], null],
+  ]) {
+    const gate = deferred(), abort = new AbortController(), phases = [];
+    options = { [gateName]: gate }; events = [];
+    const attempt = NfcService.writeUrls(original, { signal: abort.signal, onStage: (stage) => phases.push(stage) });
+    await settle(); assert.deepEqual(phases, expectedStages);
+    abort.abort(); gate.resolve();
+    assert.equal((await attempt).reason, 'cancelled', `${gateName} abort cannot become verified success`);
+    if (laterEvent) assert.equal(events.includes(laterEvent), false, `${gateName}: no native ${laterEvent} after abort`);
+    assert.equal(events.filter((e) => e === 'cancel').length, 1, 'Abort and finally share cleanup');
+  }
+  options = { supportError: true }; events = [];
+  assert.equal((await NfcService.writeUrls(original)).reason, 'failed', 'Readiness rejection returns a failure result');
+  console.log('PASS: write snapshot/real UTF-8 byte length, native-gated waiting/write/verify stages, cancellation at request/status/write/fresh boundaries, one cleanup/no later write/no false success');
   console.log('PASS: native fields/ids, duplicate/order/byte comparison, fresh read/errors, status fail-closed, malformed UTF-8, session cleanup');
   console.log('PASS: read URL strings/order/duplicates, []/TNF_EMPTY writable/read-only metadata, null tag failure without capacity, missing/invalid tag distinction, unavailable NFC');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

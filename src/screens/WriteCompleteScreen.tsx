@@ -1,5 +1,4 @@
-// 쓰기 완료 화면 — 시안 07_완료
-// 체크 아이콘 + 완료 문구 + Saved URL + Verify / Next 버튼
+// 검증 성공 후의 완료 화면 — HANDOFF §4.8
 
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import React from 'react';
@@ -7,7 +6,6 @@ import { Image, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppPrimaryButton, AppSecondaryButton } from '@/components/AppButton';
-import { useLinkWriter } from '@/state/LinkWriterContext';
 import { APP_ICONS } from '@/theme/icons';
 import { AppColors, AppOpacity, AppRadius, AppSpacing, AppText } from '@/theme/tokens';
 import type { RootStackParamList } from '@/navigation';
@@ -15,20 +13,17 @@ import type { RootStackParamList } from '@/navigation';
 type Props = NativeStackScreenProps<RootStackParamList, 'WriteComplete'>;
 
 export function WriteCompleteScreen({ route, navigation }: Props) {
-  const { urls, linkTypeId } = route.params;
+  const { urls, usedBytes } = route.params;
   const primaryUrl = urls[0];
-  const { clear } = useLinkWriter();
-
-  const onVerify = () => {
-    // 방금 쓴 태그를 다시 읽어 확인하는 흐름 — 대표 링크 기준으로 보여준다
-    navigation.navigate('TagInfo', { url: primaryUrl, linkTypeId, writable: true });
+  const onDone = () => {
+    if (!navigation.isFocused()) return;
+    navigation.reset({ index: 0, routes: [{ name: 'Home' }] });
   };
 
   const onNext = () => {
-    // HANDOFF.md §4.8 "다른 태그도 쓰기" — 여기서는 완전한 새 태그이므로
-    // 기존 목록을 비우고 처음부터 다시 시작한다.
-    clear();
-    navigation.popToTop();
+    if (!navigation.isFocused()) return;
+    // 원래 LinkEdit는 스택에 남긴다. 입력 완료의 popTo가 그 편집으로 돌아간다.
+    navigation.replace('LinkTypeSelect');
   };
 
   return (
@@ -39,9 +34,10 @@ export function WriteCompleteScreen({ route, navigation }: Props) {
 
         <View style={{ height: AppSpacing.lg }} />
         <Text style={[AppText.headlineLarge, styles.centerTitle]}>쓰기 완료</Text>
+        <Text style={[AppText.bodyMedium, styles.centerSub]}>✓ 쓰기 → ✓ 검증 재읽기 → ✓ 완료</Text>
         <View style={{ height: AppSpacing.sm }} />
         <Text style={[AppText.bodyMedium, styles.centerSub]}>
-          NFC 태그에 링크 {urls.length}개가 저장되었습니다
+          링크 {urls.length}개 저장 · 최종 사용량 {usedBytes} B
         </Text>
 
         <View style={{ height: AppSpacing.xxl }} />
@@ -62,9 +58,9 @@ export function WriteCompleteScreen({ route, navigation }: Props) {
       </ScrollView>
 
       <View style={styles.footer}>
-        <AppPrimaryButton label="확인" onPress={onVerify} />
+        <AppPrimaryButton label="완료" onPress={onDone} />
         <View style={{ height: AppSpacing.itemGap }} />
-        <AppSecondaryButton label="다른 태그도 쓰기" onPress={onNext} />
+        <AppSecondaryButton label="링크 더 추가하기" onPress={onNext} />
       </View>
     </SafeAreaView>
   );

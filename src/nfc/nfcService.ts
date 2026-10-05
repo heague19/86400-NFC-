@@ -27,6 +27,16 @@ export type NfcFailureReason =
   | 'unknown'
   | 'verify_mismatch'; // 쓰기 후 재읽기 대조 불일치 (부분 기록 가능성)
 
+export type NfcWriteStage = 'waiting' | 'writing' | 'verifying';
+export interface NfcWriteOptions {
+  signal?: AbortSignal;
+  onStage?: (stage: NfcWriteStage) => void;
+}
+
+export type NfcWriteResult =
+  | { ok: true; message: string; usedBytes: number }
+  | { ok: false; reason: NfcFailureReason; message: string };
+
 export type NfcResult =
   | { ok: true; message: string }
   | { ok: false; reason: NfcFailureReason; message: string };
@@ -59,7 +69,7 @@ const MESSAGES: Record<NfcFailureReason, string> = {
   unknown: '알 수 없는 문제가 발생했습니다. 다시 시도해주세요.',
   // HANDOFF.md §4.9 — 쓰기 API가 성공을 반환해도 재읽기 대조가 불일치하면
   // 부분 기록 가능성이 있으므로 "실패"가 아니라 이렇게 표현한다
-  verify_mismatch: '태그에 일부만 기록되었을 수 있습니다. 태그를 떼지 말고 다시 저장해주세요.',
+  verify_mismatch: '태그에 일부만 기록되었을 수 있습니다. 편집 내용은 그대로 남아 있습니다. 전체 재쓰기를 누르고 태그를 다시 대주세요.',
 };
 
 function fail(reason: NfcFailureReason): { ok: false; reason: NfcFailureReason; message: string } {
@@ -223,12 +233,18 @@ export const NfcService = {
    * urls[0]이 대표 링크이며 항상 첫 번째 NDEF 레코드로 직렬화된다.
    * 매번 전체 재작성 — 기존 레코드에 이어붙이는 부분 갱신은 하지 않는다.
    */
-  async writeUrls(urls: string[]): Promise<NfcResult> {
-    const notReady = await ensureReady();
-    if (notReady) return fail(notReady);
-    if (urls.length === 0) return fail('failed');
-
+  async writeUrls(urls: string[], options: NfcWriteOptions = {}): Promise<NfcWriteResult> {
+    const { signal, onStage } = options;
+    const checkCancelled = () => { if (signal?.aborted) throw new Error('cancelled'); };
+    // 대기 중 외부 배열이 바뀌어도 이번에 쓸 전체 메시지는 그대로 유지한다.
+    const snapshot = [...urls];
     try {
+      checkCancelled();
+      onStage?.('waiting');
+      const notReady = await ensureReady();
+      checkCancelled();
+      if (notReady) return fail(notReady);
+      if (snapshot.length === 0) return fail('failed');
       return await withNdefSession('태그에 링크를 쓰는 중입니다.\n휴대폰 뒷면을 태그에 대주세요.', async () => {
         // 태그 상태 확인 — 쓰기 가능 여부와 실제 용량을 먼저 본다
         const status = await getCheckedNdefStatus();
@@ -236,7 +252,7 @@ export const NfcService = {
         if (status.status === NdefStatus.NotSupported) return fail('not_ndef');
         if (status.status === NdefStatus.ReadOnly) return fail('read_only');
 
-        const bytes = Ndef.encodeMessage(urls.map((u) => Ndef.uriRecord(u)));
+        const bytes = Ndef.encodeMessage(snapshot.map((u) => Ndef.uriRecord(u)));
         if (!bytes) return fail('failed');
 
         // 하드코딩된 144byte 대신 태그가 알려준 실제 용량으로 검사
@@ -244,17 +260,25 @@ export const NfcService = {
           return fail('capacity');
         }
 
+        checkCancelled();
+        onStage?.('writing');
+        checkCancelled();
         await NfcManager.ndefHandler.writeNdefMessage(bytes, { reconnectAfterWrite: true });
+        checkCancelled();
+        onStage?.('verifying');
+        checkCancelled();
 
         // HANDOFF.md §5.7 — 쓰기 API가 성공을 반환해도 부분 기록 가능성이 있으므로
         // 같은 세션에서 즉시 다시 읽어 방금 쓴 내용과 바이트 단위로 대조한다.
         // "저장됨"이라고 말하는 시점이 실제로 검증된 시점이 되도록.
         try {
           const verifyTag = await NfcManager.ndefHandler.getNdefMessage();
+          checkCancelled();
           const verifiedBytes = encodeNativeRecords(verifyTag?.ndefMessage ?? []);
           if (verifiedBytes.length !== bytes.length ||
               !verifiedBytes.every((byte, i) => byte === bytes[i])) return fail('verify_mismatch');
         } catch {
+          checkCancelled();
           // 이미 썼으므로 재읽기/직렬화 오류도 기록 검증 실패로 처리한다.
           return fail('verify_mismatch');
         }
@@ -262,10 +286,11 @@ export const NfcService = {
         if (Platform.OS === 'ios') {
           await NfcManager.setAlertMessage('저장 완료').catch(() => {});
         }
-        return { ok: true as const, message: '태그에 링크를 저장했습니다.' };
-      });
+        checkCancelled();
+        return { ok: true as const, message: '태그에 링크를 저장했습니다.', usedBytes: bytes.length };
+      }, signal);
     } catch (err) {
-      return fail(classifyError(err));
+      return fail(signal?.aborted ? 'cancelled' : classifyError(err));
     }
   },
 

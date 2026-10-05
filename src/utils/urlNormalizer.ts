@@ -108,6 +108,18 @@ export function removeTrackingParams(url: string): string {
   }
 }
 
+/**
+ * 프리셋에 없는 링크는 서비스 개념이 없으므로 도메인을 라벨로 쓴다 (notion.so, velog.io).
+ * ① 읽기 목록과 ② 수정 목록이 같이 쓴다 (§4.2-4 · §4.6-4).
+ */
+export function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return '링크';
+  }
+}
+
 export function isValidHttpUrl(url: string): boolean {
   const trimmed = url.trim();
   if (trimmed.includes(' ')) return false;

@@ -414,6 +414,22 @@ const contextUrls = (h) => h.context.links.map((l) => l.normalizedUrl);
   h.dispose();
 
 
+  // 3-8 (F6): ②의 기타 행은 모두 "직접 입력"이 아니라 실제 도메인으로 보인다. ①도 같은 hostOf를 쓴다.
+  const labels = (host) => nodes(host.editor.tree).filter((n) => n.type === 'Text').flatMap((n) => n.props.children).filter((c) => typeof c === 'string');
+  const mixed = ['https://www.notion.so/page', 'https://velog.io/@someone', 'https://www.instagram.com/Mixed_Name/'];
+  readResult = success(mixed, 512); h = new Harness();
+  h.dispatch({ type: 'NAVIGATE', payload: { name: 'TagRead' } }); await h.press('태그 읽기'); await h.settle();
+  assert.deepEqual(labels(h).filter((t) => ['notion.so', 'velog.io', 'Instagram', '직접 입력'].includes(t)), ['notion.so', 'velog.io', 'Instagram'], '① labels');
+  h.press('수정하기'); await h.settle();
+  assert.equal(h.route.name, 'LinkEdit');
+  assert.deepEqual(labels(h).filter((t) => ['notion.so', 'velog.io', 'Instagram', '직접 입력'].includes(t)), ['notion.so', 'velog.io', 'Instagram'], '② labels match ①');
+  addPreset(h, 'X', 'hong'); h.press('다음');
+  h.press('링크 추가'); h.find('AppActionCard', (p) => p.title === '직접 입력').onPress(); h.flush();
+  h.find('AppTextField').onChangeText('https://www.example.org/a?utm_source=x'); h.flush(); h.press('다음');
+  const rows = labels(h).filter((t) => ['notion.so', 'velog.io', 'Instagram', 'X', 'example.org', '직접 입력'].includes(t));
+  assert.deepEqual(rows, ['notion.so', 'velog.io', 'Instagram', 'X', 'example.org'], 'Three 기타 rows are told apart by domain; presets keep the service name');
+  h.dispose();
+
   readResult = success(); h = new Harness();
   h.dispatch({ type: 'NAVIGATE', payload: { name: 'TagRead' } });
   await h.press('태그 읽기'); await h.settle();

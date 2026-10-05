@@ -17,6 +17,7 @@ import { AppRingBadge } from '@/components/AppRingBadge';
 import { detectLinkTypeFromUrl } from '@/models/linkType';
 import { NfcService } from '@/nfc/nfcService';
 import { NdefSize } from '@/utils/ndefSize';
+import { hostOf } from '@/utils/urlNormalizer';
 import { linkTypeIcon } from '@/theme/icons';
 import { AppColors, AppOpacity, AppRadius, AppSpacing, AppText } from '@/theme/tokens';
 import type { RootStackParamList } from '@/navigation';
@@ -31,15 +32,6 @@ interface ReadTag {
   urls: string[];
   capacity?: number;
   writable?: boolean;
-}
-
-/** 프리셋에 없는 링크는 도메인을 라벨로 쓴다 (notion.so, velog.io) */
-function hostOf(url: string): string {
-  try {
-    return new URL(url).hostname.replace(/^www\./, '');
-  } catch {
-    return '링크';
-  }
 }
 
 export function TagReadScreen({ navigation }: Props) {

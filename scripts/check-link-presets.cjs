@@ -173,4 +173,8 @@ assert.deepEqual(w.warningsForLink([], 0), []);
 const d = w.describeWarnings([{ kind: 'chars', message: 'm1' }, { kind: 'chars', message: 'm2' }, { kind: 'duplicate', message: 'm3' }]);
 assert.deepEqual(d, { title: '허용 문자 위반 · 중복', message: 'm1\nm2\nm3' });
 
-console.log('PASS: six preset patterns, normalization order (trim/paste/@/trailing slash/chars/case/assemble), YouTube-only 3~30 length, allowed chars incl. "-", per-service URL paste extraction, other-domain/non-account suggestion, handle-vs-URL false positives, tag URL classification, 기타 pipeline separation and unchanged tracking removal; warning rules: same-service vs exact-URL duplicates, edit self-exclusion, tag rows quiet, per-row recompute');
+// 3-8 — hostOf: ①·② 공용. www.만 벗기고 서브도메인은 둔다. 파싱 불가면 '링크'.
+for (const [url, host] of [['https://www.notion.so/a', 'notion.so'], ['https://velog.io/@x', 'velog.io'], ['http://Blog.Example.COM:8080/p', 'blog.example.com'],
+    ['https://m.example.com/', 'm.example.com'], ['not a url', '링크'], ['', '링크']]) assert.equal(n.hostOf(url), host, url);
+
+console.log('PASS: six preset patterns, normalization order (trim/paste/@/trailing slash/chars/case/assemble), YouTube-only 3~30 length, allowed chars incl. "-", per-service URL paste extraction, other-domain/non-account suggestion, handle-vs-URL false positives, tag URL classification, 기타 pipeline separation and unchanged tracking removal; warning rules: same-service vs exact-URL duplicates, edit self-exclusion, tag rows quiet, per-row recompute; hostOf');

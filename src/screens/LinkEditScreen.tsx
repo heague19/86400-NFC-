@@ -12,10 +12,12 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { AppPrimaryButton, AppSecondaryButton } from '@/components/AppButton';
 import { AppInfoCard } from '@/components/AppCards';
 import { AppCapacityGauge } from '@/components/AppCapacityGauge';
+import { CUSTOM_LINK_TYPE } from '@/models/linkType';
 import { useLinkWriter } from '@/state/LinkWriterContext';
 import { NfcService } from '@/nfc/nfcService';
 import { describeWarnings, warningsForLink } from '@/utils/linkWarnings';
 import { NdefSize } from '@/utils/ndefSize';
+import { hostOf } from '@/utils/urlNormalizer';
 import { linkTypeIcon } from '@/theme/icons';
 import { AppColors, AppOpacity, AppRadius, AppSpacing, AppText } from '@/theme/tokens';
 import type { RootStackParamList } from '@/navigation';
@@ -213,7 +215,10 @@ export function LinkEditScreen({ navigation, route }: Props) {
                     />
                     <View style={styles.linkTextCol}>
                       <View style={styles.linkTitleRow}>
-                        <Text style={styles.linkTitle}>{link.linkType.label}</Text>
+                        {/* 기타는 서비스 개념이 없다 — 전부 "직접 입력"으로 보이면 여러 개를 구분할 수 없다 (F6) */}
+                        <Text style={styles.linkTitle}>
+                          {link.linkType.id === CUSTOM_LINK_TYPE.id ? hostOf(link.normalizedUrl) : link.linkType.label}
+                        </Text>
                         {isPrimary ? (
                           <View style={styles.primaryBadge}>
                             <Text style={styles.primaryBadgeText}>대표 · 탭하면 이 링크가 열립니다</Text>

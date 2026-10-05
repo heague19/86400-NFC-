@@ -48,7 +48,16 @@ for (const bad of ['hong$', '홍길동', 'ho%ng', 'a?b', 'a#b']) {
   assert.deepEqual(kinds('x', bad), ['chars'], bad);
   assert.equal(urlOf('x', bad), `https://x.com/${bad}`, bad);
 }
-assert.equal(urlOf('x', 'ho ng'), null, 'Whitespace cannot form a valid http URL');
+// 공백이 든 입력도 경고와 함께 추가된다 (§5.6 — 형식 이상은 막지 않음). 공백은 %20으로 바꿔 URL이 유효하게 남는다.
+assert.deepEqual(kinds('x', 'bad name'), ['chars']);
+assert.equal(urlOf('x', 'bad name'), 'https://x.com/bad%20name');
+assert.equal(n.isValidHttpUrl(urlOf('x', 'bad name')), true, 'The app\'s own read path still accepts what it wrote');
+assert.equal(urlOf('x', '@ hong'), 'https://x.com/%20hong'); assert.deepEqual(kinds('x', '@ hong'), ['chars']);
+assert.equal(urlOf('instagram', 'a\tb'), 'https://www.instagram.com/a%09b/');
+// 파싱할 수 없는 URL 모양은 입력 문자열로 보고 경고한다
+assert.deepEqual(run('x', 'https://'), { url: 'https://x.com/https:', warnings: run('x', 'https://').warnings, customSuggestion: null });
+assert.deepEqual(kinds('x', 'https://'), ['chars']);
+assert.equal(urlOf('x', 'http://bad host/x'), 'https://x.com/http://bad%20host/x'); assert.deepEqual(kinds('x', 'http://bad host/x'), ['chars']);
 assert.equal(urlOf('x', 'a$&b'), 'https://x.com/a$&b', 'Handle text is never read as a replacement pattern');
 assert.equal(urlOf('x', 'a$1b'), 'https://x.com/a$1b');
 
@@ -101,8 +110,8 @@ for (const [id, input, suggestion] of [
   const r = run(id, input);
   assert.equal(r.url, null, `${id} ${input} is not assembled`); assert.equal(r.customSuggestion, suggestion, `${id} ${input}`);
 }
-// http(s)가 아닌 스킴·깨진 URL은 제안도 만들지 않는다 (보안: 기타로도 넘기지 않는다).
-for (const input of ['ftp://example.com/x', 'file:///etc/passwd', 'javascript://x', 'https://', 'intent://scan/#Intent;end']) {
+// http(s)가 아닌 스킴은 만들지 않고 제안도 하지 않는다 (K9 — 기타로도 넘기지 않는다).
+for (const input of ['ftp://example.com/x', 'ftp://a b', 'file:///etc/passwd', 'javascript://x', 'intent://scan/#Intent;end']) {
   const r = run('x', input); assert.equal(r.url, null, input); assert.equal(r.customSuggestion, null, input);
 }
 
@@ -133,6 +142,19 @@ for (const bad of ['', '  ', 'ftp://example.com', 'javascript:alert(1)', 'a b', 
 assert.equal(n.removeTrackingParams('https://example.com/p?utm_source=a&keep=1&igsh=z'), 'https://example.com/p?keep=1');
 assert.equal(n.removeTrackingParams('https://example.com/p?utm_medium=a'), 'https://example.com/p');
 assert.equal(n.removeTrackingParams('https://example.com/p?tok=A~B&utm_source=x'), 'https://example.com/p?tok=A%7EB', 'Known E3a rewrite, kept as is');
+// 기타 입력(normalizeCustomInput) — 형식 이상은 경고와 함께 추가, 빈 입력·http(s) 아닌 스킴만 막는다 (K9)
+const ci = n.normalizeCustomInput;
+for (const ok of ['example.com/a/b:c?x=1#f', '  Example.com/Path/  ', 'http://example.com:8080/@user/']) {
+  assert.deepEqual(ci(ok), { url: n.normalizeFullUrl(ok), warnings: [] }, ok);
+}
+for (const [bad, url] of [['bad name', 'https://bad name'], ['https://exa mple.com', 'https://exa mple.com'], ['https://', 'https://'], ['a b/c d', 'https://a b/c d']]) {
+  const r = ci(bad); assert.equal(r.url, url, bad); assert.deepEqual(r.warnings.map((x) => x.kind), ['format'], bad);
+  assert.equal(n.normalizeFullUrl(bad), null, 'The strict normalizer is unchanged');
+  assert.equal(n.removeTrackingParams(r.url), r.url, 'Tracking removal leaves a malformed URL alone');
+}
+for (const blocked of ['', '   ', 'ftp://example.com', 'javascript:alert(1)', 'file:///etc/passwd', 'mailto:a@b.c', 'tel:123']) {
+  assert.deepEqual(ci(blocked), { url: null, warnings: [] }, JSON.stringify(blocked));
+}
 assert.equal(n.isValidHttpUrl('https://x.com/a b'), false); assert.equal(n.isValidHttpUrl('javascript:alert(1)'), false);
 
 // 3-7a — 경고 배지 규칙 (linkWarnings): 중복 · 허용 문자 위반 · 형식 이상
@@ -164,6 +186,8 @@ assert.deepEqual(kindsOf([preset('x', 'hong$')], 0), ['chars']);
 assert.deepEqual(kindsOf([preset('youtube', 'ab')], 0), ['format']);
 assert.deepEqual(kindsOf([preset('x', 'ho$ng'), preset('x', 'ok')], 0), ['chars', 'duplicate'], 'Own warnings first, then duplicate');
 assert.deepEqual(kindsOf([custom('https://example.com/a?x=1&y=$%')], 0), [], '기타 never gets the preset char rules');
+assert.deepEqual(kindsOf([custom('bad name')], 0), ['format'], 'A malformed 기타 URL keeps its badge in the list');
+assert.deepEqual(kindsOf([custom('bad name', { fromTag: true })], 0), [], 'but never for a row read from a tag');
 const fromTag = [preset('instagram', 'a'), preset('instagram', 'b')].map((l) => ({ ...l, fromTag: true }));
 assert.deepEqual([kindsOf(fromTag, 0), kindsOf(fromTag, 1)], [[], []], 'Tag rows load without warnings');
 assert.deepEqual(kindsOf([...fromTag, preset('instagram', 'c')], 2), ['duplicate'], 'A new row that overlaps a tag row is flagged');
@@ -177,4 +201,4 @@ assert.deepEqual(d, { title: '허용 문자 위반 · 중복', message: 'm1\nm2\
 for (const [url, host] of [['https://www.notion.so/a', 'notion.so'], ['https://velog.io/@x', 'velog.io'], ['http://Blog.Example.COM:8080/p', 'blog.example.com'],
     ['https://m.example.com/', 'm.example.com'], ['not a url', '링크'], ['', '링크']]) assert.equal(n.hostOf(url), host, url);
 
-console.log('PASS: six preset patterns, normalization order (trim/paste/@/trailing slash/chars/case/assemble), YouTube-only 3~30 length, allowed chars incl. "-", per-service URL paste extraction, other-domain/non-account suggestion, handle-vs-URL false positives, tag URL classification, 기타 pipeline separation and unchanged tracking removal; warning rules: same-service vs exact-URL duplicates, edit self-exclusion, tag rows quiet, per-row recompute; hostOf');
+console.log('PASS: six preset patterns, normalization order (trim/paste/@/trailing slash/chars/case/assemble), YouTube-only 3~30 length, allowed chars incl. "-", per-service URL paste extraction, other-domain/non-account suggestion, handle-vs-URL false positives, tag URL classification, 기타 pipeline separation and unchanged tracking removal; format anomalies warn-and-add (preset whitespace -> %20, 기타 malformed URL) while empty input and non-http(s) schemes stay blocked; warning rules: same-service vs exact-URL duplicates, edit self-exclusion, tag rows quiet, per-row recompute; hostOf');

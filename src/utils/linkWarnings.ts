@@ -5,7 +5,7 @@
 // 중복 여부는 다른 행을 지우거나 고치면 달라지므로 입력 시점에 저장해 두지 않는다.
 
 import type { UrlDraft } from '@/models/linkType';
-import { normalizePresetInput, type LinkWarning, type LinkWarningKind } from '@/utils/urlNormalizer';
+import { normalizeCustomInput, normalizePresetInput, type LinkWarning, type LinkWarningKind } from '@/utils/urlNormalizer';
 
 const WARNING_LABELS: Record<LinkWarningKind, string> = {
   duplicate: '중복',
@@ -42,7 +42,7 @@ export function warningsForLink(links: UrlDraft[], index: number): LinkWarning[]
   if (!link || link.fromTag) return [];
   const own = link.linkType.inputMode === 'username'
     ? normalizePresetInput(link.linkType, link.originalInput).warnings
-    : [];
+    : normalizeCustomInput(link.originalInput).warnings;
   const duplicate = findDuplicate(links, link, index);
   return duplicate ? [...own, duplicate] : own;
 }

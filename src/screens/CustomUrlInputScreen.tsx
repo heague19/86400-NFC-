@@ -24,7 +24,7 @@ import { CUSTOM_LINK_TYPE, type UrlDraft } from '@/models/linkType';
 import { useLinkWriter } from '@/state/LinkWriterContext';
 import { NdefSize } from '@/utils/ndefSize';
 import { describeWarnings, findDuplicate } from '@/utils/linkWarnings';
-import { normalizeFullUrl, removeTrackingParams } from '@/utils/urlNormalizer';
+import { normalizeCustomInput, removeTrackingParams } from '@/utils/urlNormalizer';
 import { linkTypeIcon } from '@/theme/icons';
 import { AppColors, AppOpacity, AppSpacing, AppText } from '@/theme/tokens';
 import type { RootStackParamList } from '@/navigation';
@@ -42,16 +42,18 @@ export function CustomUrlInputScreen({ navigation, route }: Props) {
   );
   const [removeTracking, setRemoveTracking] = useState(true);
 
+  const input = useMemo(() => normalizeCustomInput(text), [text]);
   const normalizedUrl = useMemo(() => {
-    const normalized = normalizeFullUrl(text);
-    if (normalized === null) return null;
-    return removeTracking ? removeTrackingParams(normalized) : normalized;
-  }, [text, removeTracking]);
+    if (input.url === null) return null;
+    // 형식이 이상한 URL은 removeTrackingParams가 그대로 돌려준다.
+    return removeTracking ? removeTrackingParams(input.url) : input.url;
+  }, [input, removeTracking]);
 
   const hasInput = text.trim().length > 0;
   const showError = hasInput && normalizedUrl === null;
   // 기타 중복은 저장 URL이 완전히 같을 때만. 기존 행을 고치는 중이면 그 행(editIndex)은 뺀다.
   const duplicate = normalizedUrl ? findDuplicate(links, { linkType, normalizedUrl }, editIndex) : null;
+  const warnings = duplicate ? [...input.warnings, duplicate] : input.warnings;
 
   const onNext = () => {
     if (normalizedUrl === null) return;
@@ -92,7 +94,7 @@ export function CustomUrlInputScreen({ navigation, route }: Props) {
             placeholder={linkType.placeholder}
             keyboardType="url"
             hasError={showError}
-            errorText="올바른 URL이 아닙니다. (http/https 웹 주소만 가능)"
+            errorText="http/https 웹 주소만 추가할 수 있습니다."
           />
 
           <View style={{ height: AppSpacing.md }} />
@@ -111,10 +113,10 @@ export function CustomUrlInputScreen({ navigation, route }: Props) {
             </>
           ) : null}
 
-          {duplicate ? (
+          {warnings.length > 0 ? (
             <>
               <View style={{ height: AppSpacing.sm }} />
-              <AppInfoCard {...describeWarnings([duplicate])} variant="warning" />
+              <AppInfoCard {...describeWarnings(warnings)} variant="warning" />
             </>
           ) : null}
         </ScrollView>

@@ -397,16 +397,43 @@ const contextUrls = (h) => h.context.links.map((l) => l.normalizedUrl);
   assert.equal(h.find('AppPrimaryButton', (p) => p.label === '저장').disabled, false, 'Warnings never block saving');
   await h.press('저장'); await h.settle();
   assert.deepEqual(writes.at(-1), ['https://example.com/seed', 'https://x.com/hong$'], 'The warned URL is written as typed');
-  // 그래도 만들 수 없는 입력은 막는다 — 이 URL은 앱이 읽을 때 isValidHttpUrl로 걸러내는 모양이다.
+  // 형식 이상(공백이 든 계정명, 깨진 URL)도 경고와 함께 실제로 추가된다 — disabled만 푼 게 아니라 onNext도 추가한다 (§5.6).
   h.dispose(); readResult = success(['https://example.com/seed'], 512); h = new Harness(); h.enterEdit(); await h.settle();
-  for (const [label, input] of [['X', ''], ['X', '   '], ['X', '@/'], ['X', 'ho ng'], ['X', ' @ / '],
-      ['Instagram', 'https://github.com/foo'], ['Instagram', 'https://instagram.com/p/xyz/'], ['X', 'ftp://example.com/x'], ['X', 'https://']]) {
+  const releaseKey2 = h.route.key;
+  for (const [label, input, expected, kind] of [
+    ['X', 'bad name', 'https://x.com/bad%20name', '허용 문자'],
+    ['X', 'ho ng', 'https://x.com/ho%20ng', '허용 문자'],
+    ['Instagram', '@ hong', 'https://www.instagram.com/%20hong/', '허용 문자'],
+    ['X', 'https://', 'https://x.com/https:', '허용 문자'],
+    ['직접 입력', 'bad name', 'https://bad name', '형식 이상'],
+    ['직접 입력', 'https://exa mple.com', 'https://exa mple.com', '형식 이상'],
+    ['직접 입력', 'https://', 'https://', '형식 이상'],
+  ]) {
+    const before = h.context.links.length;
     addPreset(h, label, input);
-    assert.equal(next(h), true, `${label} ${JSON.stringify(input)} has no URL to build`);
+    assert.equal(cardOf(h, kind).length, 1, `${label} ${JSON.stringify(input)}: ${kind} badge`);
+    assert.equal(next(h), false, `${label} ${JSON.stringify(input)}: a format anomaly must not block adding`);
+    h.press('다음');
+    assert.equal(h.route.key, releaseKey2); assert.equal(h.context.links.length, before + 1, 'onNext really adds it');
+    assert.equal(h.context.links.at(-1).normalizedUrl, expected);
+    assert.equal(h.context.links.at(-1).originalInput, input.trim());
+    assert.ok(cardOf(h, kind).length >= 1, 'The badge stays on the row');
+  }
+  h.context.removeLink(0); h.flush();
+  while (h.context.links.length > 2) { h.context.removeLink(h.context.links.length - 1); h.flush(); }
+  assert.equal(h.find('AppPrimaryButton', (p) => p.label === '저장').disabled, false, 'Format warnings never block saving');
+  await h.press('저장'); await h.settle();
+  assert.deepEqual(writes.at(-1), ['https://x.com/bad%20name', 'https://x.com/ho%20ng'], 'Saved as built, whitespace encoded');
+  h.dispose();
+  // 그래도 추가할 것이 없는 입력은 막는다: 빈 값, `@`·`/`만 있는 값, 다른 도메인(기타 제안으로 대신), http(s)가 아닌 스킴(K9)
+  readResult = success(['https://example.com/seed'], 512); h = new Harness(); h.enterEdit(); await h.settle();
+  for (const [label, input] of [['X', ''], ['X', '   '], ['X', '@/'], ['X', ' @ / '],
+      ['Instagram', 'https://github.com/foo'], ['Instagram', 'https://instagram.com/p/xyz/'], ['X', 'ftp://example.com/x'], ['X', 'ftp://a b']]) {
+    addPreset(h, label, input);
+    assert.equal(next(h), true, `${label} ${JSON.stringify(input)} has nothing to add`);
     h.back(); h.back();
   }
-  // 기타도 URL을 만들 수 없으면 막는다 (http(s) 웹 주소만). 허용 문자 규칙은 여전히 없다.
-  for (const bad of ['', 'ftp://example.com/x', 'javascript:alert(1)', 'https://exa mple.com', 'file:///etc/passwd']) {
+  for (const bad of ['', '   ', 'ftp://example.com/x', 'javascript:alert(1)', 'file:///etc/passwd', 'mailto:a@b.c']) {
     h.press('링크 추가'); h.find('AppActionCard', (p) => p.title === '직접 입력').onPress(); h.flush();
     h.find('AppTextField').onChangeText(bad); h.flush();
     assert.equal(next(h), true, `기타 ${JSON.stringify(bad)} stays blocked`); h.back(); h.back();

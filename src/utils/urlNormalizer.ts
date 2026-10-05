@@ -2,7 +2,7 @@
 //
 // HANDOFF §5.1 — 두 파이프라인이 완전히 분리돼 있다.
 //   프리셋: normalizePresetInput (입력 = 계정명, 허용 문자 검증 있음)
-//   기타:   normalizeFullUrl     (입력 = URL 전체, 허용 문자 검증 없음)
+//   기타:   normalizeCustomInput  (입력 = URL 전체, 허용 문자 검증 없음)
 // 이 파일은 import 없이(타입 import 제외) 유지한다 — scripts/check-*.cjs가 그대로 불러 실행한다.
 
 import type { LinkType } from '@/models/linkType';
@@ -47,18 +47,21 @@ export function normalizePresetInput(preset: LinkType, input: string): PresetInp
   if (!pattern || handle.length === 0) return none();
 
   if (looksLikeUrl(handle)) {
+    // http(s)가 아닌 스킴은 K9대로 만들지 않는다. 그 밖의 형식 이상은 아래에서 경고로만 알린다.
+    if (URL_SCHEME_PATTERN.test(handle) && !SCHEME_HTTP_PATTERN.test(handle)) return none();
     const uri = parseUrl(handle);
-    if (!uri || !isHttpProtocol(uri)) return none();
-    const extracted = handleFromUrl(preset, uri);
-    // 다른 도메인이거나 계정 페이지가 아니면 이 프리셋으로 만들지 않고 기타를 권한다.
-    if (extracted === null) return none(normalizeFullUrl(handle));
-    handle = extracted;
+    if (uri) {
+      const extracted = handleFromUrl(preset, uri);
+      // 다른 도메인이거나 계정 페이지가 아니면 이 프리셋으로 만들지 않고 기타를 권한다.
+      if (extracted === null) return none(normalizeFullUrl(handle));
+      handle = extracted;
+    }
+    // 파싱할 수 없는 주소(`https://`, 호스트에 공백 등)는 입력 문자열 그대로 보고 아래 경고로 알린다.
   }
   handle = handle.replace(/^@+/, '').replace(/\/+$/, '');
-  // 비었거나 공백이 남으면 URL이 될 수 없다. (`@ /`처럼 벗기고 나서 공백만 남는 경우 포함 —
-  // isValidHttpUrl은 trim 후 검사하므로 여기서 직접 걸러야 한다.)
-  if (handle.length === 0 || /\s/.test(handle)) return none();
+  if (handle.trim().length === 0) return none(); // 비었거나 공백만 남음 — 추가할 것이 없다
 
+  // 허용 문자·형식 위반은 경고일 뿐 추가를 막지 않는다 (§5.1 · §5.6).
   const warnings: LinkWarning[] = [];
   if (!HANDLE_CHARS_PATTERN.test(handle)) {
     warnings.push({ kind: 'chars', message: '허용 문자(영문·숫자·. _ -)가 아닌 글자가 있습니다.' });
@@ -68,9 +71,12 @@ export function normalizePresetInput(preset: LinkType, input: string): PresetInp
     warnings.push({ kind: 'format', message: `${preset.label} 계정명은 ${length.min}~${length.max}자여야 합니다.` });
   }
 
+  // 공백은 URL에 그대로 둘 수 없어 %20 등으로 바꾼다(경고는 그대로 보인다). 이 앱의 읽기 검증
+  // (isValidHttpUrl)이 공백 URL을 버리므로, 그대로 쓰면 저장한 링크가 다시 읽을 때 사라진다.
   // 함수 치환 — 계정명의 `$&` 같은 문자가 치환 문법으로 해석되지 않게 한다.
-  const url = pattern.replace('{handle}', () => handle);
-  return isValidHttpUrl(url) ? { url, warnings, customSuggestion: null } : none();
+  const url = pattern.replace('{handle}', () => handle.replace(/\s/g, encodeURIComponent));
+  if (!isValidHttpUrl(url)) warnings.push({ kind: 'format', message: '올바른 URL 형식이 아닙니다.' });
+  return { url, warnings, customSuggestion: null };
 }
 
 /** 이 프리셋의 계정 페이지 URL이면 계정명, 아니면 null. 태그에서 읽은 URL의 분류에도 쓴다. */
@@ -87,6 +93,32 @@ export function normalizeFullUrl(input: string): string | null {
 
   const normalized = hasAllowedScheme(trimmed) ? trimmed : `https://${trimmed}`;
   return isValidHttpUrl(normalized) ? normalized : null;
+}
+
+export interface CustomInputResult {
+  /** 저장 URL. 빈 입력이거나 http(s)가 아닌 스킴이면 null */
+  url: string | null;
+  warnings: LinkWarning[];
+}
+
+/**
+ * 기타 입력 → 저장 URL (HANDOFF §5.1 E1~E3). 형식 검증은 경고일 뿐 추가를 막지 않는다 (§5.6).
+ * 막는 것은 추가할 것이 없는 빈 입력과 http(s)가 아닌 스킴(K9)뿐이다.
+ * 추적 파라미터 제거(E3a)는 부르는 쪽이 이 URL에 적용한다.
+ */
+export function normalizeCustomInput(input: string): CustomInputResult {
+  const strict = normalizeFullUrl(input);
+  if (strict !== null) return { url: strict, warnings: [] };
+
+  const trimmed = input.trim();
+  if (trimmed.length === 0 || hasUnsupportedScheme(trimmed)) return { url: null, warnings: [] };
+  return {
+    url: hasAllowedScheme(trimmed) ? trimmed : `https://${trimmed}`,
+    warnings: [{
+      kind: 'format',
+      message: '올바른 URL 형식이 아닙니다. 그대로 추가되지만 링크로 열리지 않거나 이 앱에서 다시 읽을 때 표시되지 않을 수 있습니다.',
+    }],
+  };
 }
 
 export function removeTrackingParams(url: string): string {

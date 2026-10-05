@@ -16,6 +16,7 @@ import { AppTextField } from '@/components/AppTextField';
 import type { UrlDraft } from '@/models/linkType';
 import { useLinkWriter } from '@/state/LinkWriterContext';
 import { NdefSize } from '@/utils/ndefSize';
+import { describeWarnings, findDuplicate } from '@/utils/linkWarnings';
 import { normalizePresetInput, type PresetInputResult } from '@/utils/urlNormalizer';
 import { linkTypeIcon } from '@/theme/icons';
 import { AppColors, AppOpacity, AppSpacing, AppText } from '@/theme/tokens';
@@ -40,9 +41,12 @@ export function InstagramInputScreen({ navigation, route }: Props) {
   );
   const { url, customSuggestion } = result;
   const hasInput = text.trim().length > 0;
-  // 경고를 배지로 보여주기 전(3-7)에는 경고가 있는 입력도 추가하지 못하게 둔다 (E5 순서).
+  // 기존 행을 고치는 중이면 그 행(editIndex)은 중복 비교에서 뺀다.
+  const duplicate = linkType && url ? findDuplicate(links, { linkType, normalizedUrl: url }, editIndex) : null;
+  const warnings = duplicate ? [...result.warnings, duplicate] : result.warnings;
+  // 경고 배지를 먼저 만든 뒤(이 커밋) 다음 커밋에서 추가 차단을 푼다 (E5 순서 · 0-6).
   const blocked = url === null || result.warnings.length > 0;
-  const showError = hasInput && blocked && customSuggestion === null;
+  const showError = hasInput && url === null && customSuggestion === null;
 
   if (!linkType) {
     return (
@@ -99,13 +103,20 @@ export function InstagramInputScreen({ navigation, route }: Props) {
             label="계정명"
             placeholder={linkType.placeholder}
             hasError={showError}
-            errorText={result.warnings[0]?.message ?? `올바른 ${linkType.label} 계정명이 아닙니다.`}
+            errorText={`올바른 ${linkType.label} 계정명이 아닙니다.`}
           />
 
           {url ? (
             <>
               <View style={{ height: AppSpacing.md }} />
               <AppInfoCard title="생성될 링크" message={url} variant="neutral" />
+            </>
+          ) : null}
+
+          {warnings.length > 0 ? (
+            <>
+              <View style={{ height: AppSpacing.sm }} />
+              <AppInfoCard {...describeWarnings(warnings)} variant="warning" />
             </>
           ) : null}
 

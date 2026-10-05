@@ -14,6 +14,7 @@ import { AppInfoCard } from '@/components/AppCards';
 import { AppCapacityGauge } from '@/components/AppCapacityGauge';
 import { useLinkWriter } from '@/state/LinkWriterContext';
 import { NfcService } from '@/nfc/nfcService';
+import { describeWarnings, warningsForLink } from '@/utils/linkWarnings';
 import { NdefSize } from '@/utils/ndefSize';
 import { linkTypeIcon } from '@/theme/icons';
 import { AppColors, AppOpacity, AppRadius, AppSpacing, AppText } from '@/theme/tokens';
@@ -199,6 +200,8 @@ export function LinkEditScreen({ navigation, route }: Props) {
         ) : (
           links.map((link, index) => {
             const isPrimary = index === 0;
+            // 경고는 배지일 뿐 저장을 막지 않는다 (K17). 다른 행이 바뀌면 중복 여부가 달라지므로 매번 계산한다.
+            const warnings = warningsForLink(links, index);
             return (
               <View key={`${link.linkType.id}-${index}`}>
                 <View style={styles.linkRow}>
@@ -234,6 +237,11 @@ export function LinkEditScreen({ navigation, route }: Props) {
                     </Pressable>
                   </View>
                 </View>
+                {warnings.length > 0 ? (
+                  <View style={{ marginTop: AppSpacing.sm }}>
+                    <AppInfoCard {...describeWarnings(warnings)} variant="warning" />
+                  </View>
+                ) : null}
                 <View style={{ height: AppSpacing.itemGap }} />
               </View>
             );

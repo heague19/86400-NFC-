@@ -84,6 +84,7 @@ const normalizer = load('src/utils/urlNormalizer.ts', {});
 const state = load('src/state/LinkWriterContext.tsx', {
   react: React, '@/models/linkType': model, '@/utils/ndefSize': size, '@/utils/urlNormalizer': normalizer,
 });
+const warnings = load('src/utils/linkWarnings.ts', { '@/utils/urlNormalizer': normalizer });
 const tokens = load('src/theme/tokens.ts', {});
 let reads = 0;
 let writes = [];
@@ -109,6 +110,7 @@ const imports = {
   '@/models/linkType': model,
   '@/utils/ndefSize': size,
   '@/utils/urlNormalizer': normalizer,
+  '@/utils/linkWarnings': warnings,
   '@/nfc/nfcService': service,
   '@/theme/icons': { APP_ICONS: {}, APP_LOGO: {}, linkTypeIcon: () => 1 },
   '@/theme/tokens': tokens,
@@ -319,6 +321,45 @@ const contextUrls = (h) => h.context.links.map((l) => l.normalizedUrl);
   assert.equal(contextUrls(h)[2], 'https://www.instagram.com/new_name/'); assert.equal(h.context.links[2].fromTag, undefined);
   h.find('Pressable', (p) => nodes(p.children).some((n) => n.type === 'Text' && n.props.children.includes(tagUrls[0]))).onPress(); h.flush();
   assert.equal(h.route.name, 'CustomUrlInput', 'A github.com/org/repo row edits as 기타, not as a GitHub handle');
+  h.dispose();
+
+  // 3-7a (E5/K8/F7): 경고 배지. 중복은 추가·저장을 막지 않고, 허용 문자·형식 경고는 아직 배지만 먼저 만든 상태다.
+  const cardOf = (host, kind) => nodes(host.editor.tree).filter((n) => n.type === 'AppInfoCard' && n.props.variant === 'warning' && n.props.title?.includes(kind));
+  const tagRows = ['https://www.instagram.com/Mixed_Name/', 'https://www.instagram.com/Second_Tag_Row/', 'https://example.com/a'];
+  readResult = success(tagRows, 512); h = new Harness(); h.enterEdit(); await h.settle();
+  assert.equal(nodes(h.editor.tree).filter((n) => n.type === 'AppInfoCard' && n.props.variant === 'warning').length, 0,
+    'Rows read from the tag load without warnings (T3), even two Instagram rows');
+  const dupKey = h.route.key;
+  addPreset(h, 'Instagram', 'new_account');
+  assert.equal(cardOf(h, '중복').length, 1, 'Same-service duplicate shows a badge while typing');
+  assert.equal(h.find('AppPrimaryButton', (p) => p.label === '다음').disabled, false, 'Duplicates never block adding');
+  h.press('다음');
+  assert.equal(h.route.key, dupKey); assert.equal(cardOf(h, '중복').length, 1, 'Only the new row carries the duplicate badge, and it stays visible');
+  assert.equal(h.find('AppPrimaryButton', (p) => p.label === '저장').disabled, false, 'A duplicate badge never blocks saving (K17: only over-capacity does)');
+  // 기존 행을 고칠 때 자기 자신은 중복으로 세지 않는다
+  h.context.removeLink(1); h.context.removeLink(0); h.flush(); // 남은 행: example.com/a(기타) + 새 Instagram(대표 아님)
+  assert.equal(cardOf(h, '중복').length, 0, 'Removing the other same-service rows clears the badge');
+  h.find('Pressable', (p) => nodes(p.children).some((n) => n.type === 'Text' && n.props.children.includes('https://www.instagram.com/new_account/'))).onPress(); h.flush();
+  assert.deepEqual(h.route.params, { editIndex: 1 }); assert.equal(cardOf(h, '중복').length, 0, 'Editing the only Instagram row is not its own duplicate');
+  h.back();
+  addPreset(h, 'Instagram', 'second'); h.press('다음');
+  assert.equal(cardOf(h, '중복').length, 2, 'Both rows of a user-made same-service pair carry the badge');
+  h.find('Pressable', (p) => nodes(p.children).some((n) => n.type === 'Text' && n.props.children.includes('https://www.instagram.com/new_account/'))).onPress(); h.flush();
+  assert.equal(cardOf(h, '중복').length, 1, 'Editing one of a pair sees the other as a duplicate');
+  h.find('AppTextField').onChangeText('edited_name'); h.flush(); assert.equal(cardOf(h, '중복').length, 1); h.press('다음');
+  // 기타는 저장 URL이 완전히 같을 때만
+  addPreset(h, '직접 입력', 'https://example.com/a'); assert.equal(h.route.name, 'CustomUrlInput');
+  assert.equal(cardOf(h, '중복').length, 1, '기타 identical to the tag row is a duplicate'); h.press('다음');
+  h.press('링크 추가'); h.find('AppActionCard', (p) => p.title === '직접 입력').onPress(); h.flush();
+  h.find('AppTextField').onChangeText('https://example.com/a/'); h.flush();
+  assert.equal(cardOf(h, '중복').length, 0, '기타 with the same domain but another URL is not a duplicate');
+  h.find('AppTextField').onChangeText('https://example.com/A'); h.flush(); assert.equal(cardOf(h, '중복').length, 0, 'Exact match is case-sensitive');
+  h.back(); h.back();
+  // 허용 문자·형식 경고도 같은 카드로 보인다 (아직 추가는 막음 — 해제는 다음 커밋)
+  addPreset(h, 'X', 'hong$');
+  assert.equal(cardOf(h, '허용 문자').length, 1); assert.equal(h.find('AppPrimaryButton', (p) => p.label === '다음').disabled, true);
+  h.back(); h.back();
+  addPreset(h, 'YouTube', 'ab'); assert.equal(cardOf(h, '형식 이상').length, 1);
   h.dispose();
 
   readResult = success(); h = new Harness();

@@ -135,4 +135,42 @@ assert.equal(n.removeTrackingParams('https://example.com/p?utm_medium=a'), 'http
 assert.equal(n.removeTrackingParams('https://example.com/p?tok=A~B&utm_source=x'), 'https://example.com/p?tok=A%7EB', 'Known E3a rewrite, kept as is');
 assert.equal(n.isValidHttpUrl('https://x.com/a b'), false); assert.equal(n.isValidHttpUrl('javascript:alert(1)'), false);
 
-console.log('PASS: six preset patterns, normalization order (trim/paste/@/trailing slash/chars/case/assemble), YouTube-only 3~30 length, allowed chars incl. "-", per-service URL paste extraction, other-domain/non-account suggestion, handle-vs-URL false positives, tag URL classification, 기타 pipeline separation and unchanged tracking removal');
+// 3-7a — 경고 배지 규칙 (linkWarnings): 중복 · 허용 문자 위반 · 형식 이상
+const w = load('src/utils/linkWarnings.ts', { '@/utils/urlNormalizer': n });
+const T = (id) => model.findLinkTypeById(id);
+const preset = (id, input) => ({ linkType: T(id), originalInput: input, normalizedUrl: urlOf(id, input), estimatedBytes: 0, isValid: true });
+const custom = (url, extra = {}) => ({ linkType: model.CUSTOM_LINK_TYPE, originalInput: url, normalizedUrl: url, estimatedBytes: 0, isValid: true, ...extra });
+const dup = (links, candidate, self) => w.findDuplicate(links, candidate, self)?.kind ?? null;
+
+// 프리셋 중복 = 같은 서비스 (계정이 달라도). 다른 서비스·기타 행은 세지 않는다.
+assert.equal(dup([preset('x', 'a')], preset('x', 'b')), 'duplicate');
+assert.equal(dup([preset('x', 'a')], preset('github', 'a')), null);
+assert.equal(dup([custom('https://x.com/a')], preset('x', 'a')), null, 'A 기타 row is not a service duplicate');
+// 기타 중복 = 저장 URL이 완전히 같을 때만 (같은 도메인·대소문자·끝 슬래시 차이는 중복이 아니다)
+assert.equal(dup([custom('https://example.com/a')], custom('https://example.com/a')), 'duplicate');
+for (const other of ['https://example.com/b', 'https://example.com/A', 'https://example.com/a/', 'http://example.com/a']) {
+  assert.equal(dup([custom('https://example.com/a')], custom(other)), null, other);
+}
+// 기존 행을 고칠 때 자기 자신은 세지 않는다 (selfIndex)
+const pair = [preset('x', 'a'), preset('github', 'g')];
+assert.equal(dup(pair, preset('x', 'a2'), 0), null, 'Editing the only X row');
+assert.equal(dup([preset('x', 'a'), preset('x', 'b')], preset('x', 'a2'), 0), 'duplicate', 'Another X row still counts');
+assert.equal(dup([custom('https://example.com/a')], custom('https://example.com/a'), 0), null, 'Editing the only identical 기타 row');
+assert.equal(dup(pair, preset('x', 'new')), 'duplicate', 'Adding (no selfIndex) compares with every row');
+
+// 행 경고 — 입력 문자열에서 매번 다시 계산 · 태그에서 읽은 행은 경고하지 않는다 (T3)
+const kindsOf = (links, i) => w.warningsForLink(links, i).map((x) => x.kind);
+assert.deepEqual(kindsOf([preset('x', 'hong$')], 0), ['chars']);
+assert.deepEqual(kindsOf([preset('youtube', 'ab')], 0), ['format']);
+assert.deepEqual(kindsOf([preset('x', 'ho$ng'), preset('x', 'ok')], 0), ['chars', 'duplicate'], 'Own warnings first, then duplicate');
+assert.deepEqual(kindsOf([custom('https://example.com/a?x=1&y=$%')], 0), [], '기타 never gets the preset char rules');
+const fromTag = [preset('instagram', 'a'), preset('instagram', 'b')].map((l) => ({ ...l, fromTag: true }));
+assert.deepEqual([kindsOf(fromTag, 0), kindsOf(fromTag, 1)], [[], []], 'Tag rows load without warnings');
+assert.deepEqual(kindsOf([...fromTag, preset('instagram', 'c')], 2), ['duplicate'], 'A new row that overlaps a tag row is flagged');
+assert.deepEqual(kindsOf([...fromTag, preset('instagram', 'c')], 0), [], 'The tag row itself stays quiet');
+assert.deepEqual(w.warningsForLink([], 0), []);
+// 같은 문구를 입력 화면과 목록이 쓴다
+const d = w.describeWarnings([{ kind: 'chars', message: 'm1' }, { kind: 'chars', message: 'm2' }, { kind: 'duplicate', message: 'm3' }]);
+assert.deepEqual(d, { title: '허용 문자 위반 · 중복', message: 'm1\nm2\nm3' });
+
+console.log('PASS: six preset patterns, normalization order (trim/paste/@/trailing slash/chars/case/assemble), YouTube-only 3~30 length, allowed chars incl. "-", per-service URL paste extraction, other-domain/non-account suggestion, handle-vs-URL false positives, tag URL classification, 기타 pipeline separation and unchanged tracking removal; warning rules: same-service vs exact-URL duplicates, edit self-exclusion, tag rows quiet, per-row recompute');

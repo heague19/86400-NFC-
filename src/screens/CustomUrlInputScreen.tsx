@@ -23,6 +23,7 @@ import { AppTextField } from '@/components/AppTextField';
 import { CUSTOM_LINK_TYPE, type UrlDraft } from '@/models/linkType';
 import { useLinkWriter } from '@/state/LinkWriterContext';
 import { NdefSize } from '@/utils/ndefSize';
+import { describeWarnings, findDuplicate } from '@/utils/linkWarnings';
 import { normalizeFullUrl, removeTrackingParams } from '@/utils/urlNormalizer';
 import { linkTypeIcon } from '@/theme/icons';
 import { AppColors, AppOpacity, AppSpacing, AppText } from '@/theme/tokens';
@@ -49,6 +50,8 @@ export function CustomUrlInputScreen({ navigation, route }: Props) {
 
   const hasInput = text.trim().length > 0;
   const showError = hasInput && normalizedUrl === null;
+  // 기타 중복은 저장 URL이 완전히 같을 때만. 기존 행을 고치는 중이면 그 행(editIndex)은 뺀다.
+  const duplicate = normalizedUrl ? findDuplicate(links, { linkType, normalizedUrl }, editIndex) : null;
 
   const onNext = () => {
     if (normalizedUrl === null) return;
@@ -105,6 +108,13 @@ export function CustomUrlInputScreen({ navigation, route }: Props) {
             <>
               <View style={{ height: AppSpacing.md }} />
               <AppInfoCard title="생성될 링크" message={normalizedUrl} variant="neutral" />
+            </>
+          ) : null}
+
+          {duplicate ? (
+            <>
+              <View style={{ height: AppSpacing.sm }} />
+              <AppInfoCard {...describeWarnings([duplicate])} variant="warning" />
             </>
           ) : null}
         </ScrollView>

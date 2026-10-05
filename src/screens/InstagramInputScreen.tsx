@@ -44,8 +44,8 @@ export function InstagramInputScreen({ navigation, route }: Props) {
   // 기존 행을 고치는 중이면 그 행(editIndex)은 중복 비교에서 뺀다.
   const duplicate = linkType && url ? findDuplicate(links, { linkType, normalizedUrl: url }, editIndex) : null;
   const warnings = duplicate ? [...result.warnings, duplicate] : result.warnings;
-  // 경고 배지를 먼저 만든 뒤(이 커밋) 다음 커밋에서 추가 차단을 푼다 (E5 순서 · 0-6).
-  const blocked = url === null || result.warnings.length > 0;
+  // 허용 문자 위반·형식 이상·중복은 위 배지로 알리기만 하고 추가를 막지 않는다 (E5 · §5.6 · 0-6).
+  // 막는 것은 URL 자체를 만들 수 없는 입력뿐이다 — 비었거나 공백이 남았거나 다른 도메인 주소.
   const showError = hasInput && url === null && customSuggestion === null;
 
   if (!linkType) {
@@ -59,7 +59,7 @@ export function InstagramInputScreen({ navigation, route }: Props) {
   }
 
   const onNext = () => {
-    if (url === null || blocked) return;
+    if (url === null) return;
     const draft: UrlDraft = {
       linkType,
       originalInput: text.trim(),
@@ -135,7 +135,7 @@ export function InstagramInputScreen({ navigation, route }: Props) {
         </ScrollView>
 
         <View style={styles.footer}>
-          <AppPrimaryButton label="다음" onPress={onNext} disabled={blocked} />
+          <AppPrimaryButton label="다음" onPress={onNext} disabled={url === null} />
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>

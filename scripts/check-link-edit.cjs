@@ -355,12 +355,64 @@ const contextUrls = (h) => h.context.links.map((l) => l.normalizedUrl);
   assert.equal(cardOf(h, '중복').length, 0, '기타 with the same domain but another URL is not a duplicate');
   h.find('AppTextField').onChangeText('https://example.com/A'); h.flush(); assert.equal(cardOf(h, '중복').length, 0, 'Exact match is case-sensitive');
   h.back(); h.back();
-  // 허용 문자·형식 경고도 같은 카드로 보인다 (아직 추가는 막음 — 해제는 다음 커밋)
+  // 허용 문자·형식 경고도 같은 카드로 보인다
   addPreset(h, 'X', 'hong$');
-  assert.equal(cardOf(h, '허용 문자').length, 1); assert.equal(h.find('AppPrimaryButton', (p) => p.label === '다음').disabled, true);
+  assert.equal(cardOf(h, '허용 문자').length, 1);
   h.back(); h.back();
   addPreset(h, 'YouTube', 'ab'); assert.equal(cardOf(h, '형식 이상').length, 1);
   h.dispose();
+
+  // 3-7b (0-6): 경고는 추가·저장을 막지 않는다. 막는 것은 URL을 만들 수 없는 입력(빈 값·공백·다른 도메인·http(s) 아님)과 용량 초과뿐.
+  const next = (host) => host.find('AppPrimaryButton', (p) => p.label === '다음').disabled;
+  readResult = success(['https://example.com/seed'], 512); h = new Harness(); h.enterEdit(); await h.settle();
+  const releaseKey = h.route.key;
+  for (const [label, input, kind, expected] of [
+    ['X', 'hong$', '허용 문자', 'https://x.com/hong$'],
+    ['GitHub', '홍길동', '허용 문자', 'https://github.com/홍길동'],
+    ['YouTube', 'ab', '형식 이상', 'https://youtube.com/@ab'],
+    ['YouTube', 'a'.repeat(31), '형식 이상', `https://youtube.com/@${'a'.repeat(31)}`],
+    ['Instagram', 'ok_name', '중복', 'https://www.instagram.com/ok_name/'],
+  ]) {
+    if (kind === '중복') { // 같은 서비스를 한 번 더 넣으면 중복이 된다
+      addPreset(h, label, 'first'); h.press('다음');
+    }
+    addPreset(h, label, input);
+    assert.equal(cardOf(h, kind).length, 1, `${label} ${input}: ${kind} badge`);
+    assert.equal(next(h), false, `${label} ${input}: a warning must not block adding`);
+    h.press('다음');
+    assert.equal(h.route.key, releaseKey);
+    assert.equal(h.context.links.at(-1).normalizedUrl, expected); assert.equal(h.context.links.at(-1).linkType.label, label);
+    assert.ok(cardOf(h, kind).length >= 1, `${label} ${input}: the badge stays visible in the list`);
+  }
+  assert.ok(size.NdefSize.estimateMessageBytes(contextUrls(h)) > size.NdefSize.maxBytes);
+  assert.equal(h.find('AppPrimaryButton', (p) => p.label === '저장').disabled, true, 'Over-capacity (not the warnings) blocks saving');
+  assert.equal(reads, 1);
+  // 경고가 붙은 행을 다시 열면 같은 경고가 입력 화면에도 보인다
+  h.find('Pressable', (p) => nodes(p.children).some((n) => n.type === 'Text' && n.props.children.includes('https://x.com/hong$'))).onPress(); h.flush();
+  assert.equal(h.route.name, 'InstagramInput'); assert.equal(cardOf(h, '허용 문자').length, 1); h.back();
+  // 저장은 경고 행을 포함한 전체 목록을 그대로 쓴다
+  while (h.context.links.length > 2) { h.context.removeLink(h.context.links.length - 1); h.flush(); } // seed + hong$ 만 남겨 용량 이내로
+  assert.ok(size.NdefSize.estimateMessageBytes(contextUrls(h)) <= size.NdefSize.maxBytes);
+  assert.equal(cardOf(h, '허용 문자').length, 1);
+  assert.equal(h.find('AppPrimaryButton', (p) => p.label === '저장').disabled, false, 'Warnings never block saving');
+  await h.press('저장'); await h.settle();
+  assert.deepEqual(writes.at(-1), ['https://example.com/seed', 'https://x.com/hong$'], 'The warned URL is written as typed');
+  // 그래도 만들 수 없는 입력은 막는다 — 이 URL은 앱이 읽을 때 isValidHttpUrl로 걸러내는 모양이다.
+  h.dispose(); readResult = success(['https://example.com/seed'], 512); h = new Harness(); h.enterEdit(); await h.settle();
+  for (const [label, input] of [['X', ''], ['X', '   '], ['X', '@/'], ['X', 'ho ng'], ['X', ' @ / '],
+      ['Instagram', 'https://github.com/foo'], ['Instagram', 'https://instagram.com/p/xyz/'], ['X', 'ftp://example.com/x'], ['X', 'https://']]) {
+    addPreset(h, label, input);
+    assert.equal(next(h), true, `${label} ${JSON.stringify(input)} has no URL to build`);
+    h.back(); h.back();
+  }
+  // 기타도 URL을 만들 수 없으면 막는다 (http(s) 웹 주소만). 허용 문자 규칙은 여전히 없다.
+  for (const bad of ['', 'ftp://example.com/x', 'javascript:alert(1)', 'https://exa mple.com', 'file:///etc/passwd']) {
+    h.press('링크 추가'); h.find('AppActionCard', (p) => p.title === '직접 입력').onPress(); h.flush();
+    h.find('AppTextField').onChangeText(bad); h.flush();
+    assert.equal(next(h), true, `기타 ${JSON.stringify(bad)} stays blocked`); h.back(); h.back();
+  }
+  h.dispose();
+
 
   readResult = success(); h = new Harness();
   h.dispatch({ type: 'NAVIGATE', payload: { name: 'TagRead' } });

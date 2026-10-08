@@ -181,24 +181,26 @@ const ANDROID_NDEF_TECH = 'android.nfc.tech.Ndef';
 
 /**
  * 태그 상태 조회 — 확인되지 않으면 'unknown'이고 호출부는 쓰지 않고 멈춘다 (판정 1).
- * Android 라이브러리는 조회 오류도 NotSupported/capacity=0으로 돌려주므로 그 값만으로는 미지원 증거가 아니다.
- * Android의 미지원 증거는 "태그는 잡혔지만 Ndef 기술이 맞지 않음" 하나뿐이다:
- * requestTechnology가 정확히 null을 돌려주고 태그의 techTypes에 Ndef가 없을 때.
- * (Ndef가 있는데 null이면 연결 실패 — 태그 이동 등 — 이므로 확인 불가로 둔다.)
+ *
+ * Android: requestTechnology가 정확히 null이면 태그는 잡혔지만 Ndef 기술로 연결되지 않은 것이다.
+ * 이때 getNdefStatus는 연결 없이도 캐시된 값을 돌려줄 수 있으므로 'ready'로 믿지 않는다.
+ * 태그의 techTypes에 Ndef가 없을 때만 미지원 증거이고, Ndef가 있는데 null이면 연결 실패(태그 이동 등)이므로
+ * 확인 불가다. 또 Android 라이브러리는 조회 오류도 NotSupported/capacity=0으로 돌려주므로
+ * (연결된 뒤라면) 그 값 자체는 미지원 증거가 아니다.
  */
 async function getTagStatus(connectedTech: string | null | undefined): Promise<TagStatus> {
+  if (Platform.OS === 'android' && connectedTech === null) {
+    const techTypes = (await NfcManager.getTag().catch(() => null))?.techTypes;
+    return Array.isArray(techTypes) && techTypes.length > 0 && !techTypes.includes(ANDROID_NDEF_TECH)
+      ? { kind: 'not_ndef' }
+      : { kind: 'unknown' };
+  }
   const status = await NfcManager.ndefHandler.getNdefStatus().catch(() => null);
   if (status?.status === NdefStatus.NotSupported && Platform.OS === 'ios') return { kind: 'not_ndef' };
   if (status &&
       (status.status === NdefStatus.ReadWrite || status.status === NdefStatus.ReadOnly) &&
       Number.isSafeInteger(status.capacity) && status.capacity > 0) {
     return { kind: 'ready', writable: status.status === NdefStatus.ReadWrite, capacity: status.capacity };
-  }
-  if (Platform.OS === 'android' && connectedTech === null) {
-    const techTypes = (await NfcManager.getTag().catch(() => null))?.techTypes;
-    if (Array.isArray(techTypes) && techTypes.length > 0 && !techTypes.includes(ANDROID_NDEF_TECH)) {
-      return { kind: 'not_ndef' };
-    }
   }
   return { kind: 'unknown' };
 }

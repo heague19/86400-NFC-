@@ -358,7 +358,8 @@ async function inspect(config) {
   assert.ok(proven.capacity === undefined && proven.usedBytes === undefined && proven.recordCount === undefined);
   assert.deepEqual(proven.urls, []);
   for (const [name, config] of [
-    ['Ndef tech present but connect failed', { ...nonNdef, tag: { ndefMessage: [], techTypes: ['android.nfc.tech.NfcA', ANDROID_NDEF] } }],
+    ['Ndef tech present, connect failed, no status error (real: cached status still answers)',
+      { ...nonNdef, nativeStatusError: false, status: rw(), tag: tagOf([uri(U1)], { techTypes: ['android.nfc.tech.NfcA', ANDROID_NDEF] }) }],
     ['tag lookup throws', { ...nonNdef, tagError: true }],
     ['tag lookup returns null', { ...nonNdef, tagNull: true }],
     ['techTypes missing', { ...nonNdef, tag: { ndefMessage: [] } }],
@@ -368,6 +369,16 @@ async function inspect(config) {
   ]) {
     const r = await inspect(config);
     assert.deepEqual([r.ok, r.reason], [false, 'status_unknown'], name);
+  }
+  // A failed connect on a real NDEF tag (null request result + Ndef in techTypes) must stop all three paths even
+  // though the native status lookup itself still answers ReadWrite/ReadOnly with a real capacity.
+  for (const status of [rw(), ro()]) {
+    const connectFailed = { connected: null, status, tag: tagOf([uri(U1)], { techTypes: ['android.nfc.tech.NfcA', ANDROID_NDEF] }) };
+    assert.deepEqual([(await inspect(connectFailed)).ok, (await inspect(connectFailed)).reason], [false, 'status_unknown']);
+    native(connectFailed);
+    assert.equal((await service.readUrl()).reason, 'status_unknown');
+    native(connectFailed);
+    assert.equal((await service.writeUrls([U1])).reason, 'status_unknown'); noWrites();
   }
   // Existing read/write paths use the same lookup and stay fail-closed; evidence only changes the reason.
   native(nonNdef);
@@ -667,7 +678,7 @@ async function inspect(config) {
   assert.ok(gaugeText({ used: 14, total: undefined, linkCount: 1 }).includes('링크 1개 · 용량 확인 불가'));
 
   console.log('PASS: inspectTag exact whole-message bytes/recordCount/urls for multi-URL, duplicate, text-only, text-URL, MIME, mixed, AAR-like and blank ([]/TNF_EMPTY) tags; capacity from tag; unserializable -> 확인 불가');
-  console.log('PASS: read_write/read_only/not_ndef + lookup failure; Android NotSupported/0 fallback stays status_unknown, only requestTechnology===null + techTypes without Ndef proves 미지원; read/write stay fail-closed with no write/lock');
+  console.log('PASS: read_write/read_only/not_ndef + lookup failure; Android NotSupported/0 fallback stays status_unknown; requestTechnology===null is never ready: only techTypes without Ndef proves 미지원, Ndef present (connect failed, cached status still answering) = status_unknown for inspect/read/write with no write/lock');
   console.log('PASS: Home third button navigates only; ③ self-read once, 3 states/failure/values on screen, only 홈으로/다시 확인, no auto retry, blur/홈으로 cancel + late result dropped + re-entry after cleanup');
   console.log('PASS: ①/② anomaly -> ③ ([홈, ③], after cleanup, leave cancels jump, no clear, no write), ② write failure -> ③, ① leaving cancels its native request; shared gauge wording');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

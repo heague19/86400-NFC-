@@ -12,6 +12,7 @@ export type RootStackParamList = {
   // 읽은 결과를 받으면 재읽기 없이 편집한다. 없으면 진입 후 먼저 태그를 읽는다.
   LinkEdit: { urls: string[]; capacity?: number; writable?: boolean } | undefined;
   TagRead: undefined;
-  TagInfo: { url: string; linkTypeId?: string; writable: boolean; capacity?: number };
+  // HANDOFF.md §4.10 — 진단 전용. 파라미터 없이 독립 진입해 스스로 태그를 한 번 읽는다.
+  TagInfo: undefined;
   WriteComplete: { urls: string[]; usedBytes: number };
 };

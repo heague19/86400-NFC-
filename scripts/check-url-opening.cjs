@@ -4,7 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const ts = require('typescript');
 
-// Execute the screen's actual arrow handler, including TagInfo's captured URL.
+// Execute the screen's actual arrow handler. TagInfo is diagnosis-only since 5-1 (HANDOFF §4.10), so
+// link open/copy (§4.2-5) is verified on TagRead alone; TagInfo's lack of such actions: check-tag-diagnosis.cjs.
 function handler(source, name, Linking, Alert, Clipboard, url) {
   const ast = ts.createSourceFile('screen.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   let declaration;
@@ -24,15 +25,10 @@ function handler(source, name, Linking, Alert, Clipboard, url) {
 
 (async () => {
   const failure = ['링크 열기', '링크를 열지 못했습니다. 다시 시도해 주세요.'];
-  for (const [screen, openName] of [['TagReadScreen', 'onOpen'], ['TagInfoScreen', 'onOpenUrl']]) {
+  for (const [screen, openName] of [['TagReadScreen', 'onOpen']]) {
     const source = fs.readFileSync(path.join(__dirname, '..', 'src/screens', `${screen}.tsx`), 'utf8');
-    if (screen === 'TagReadScreen') {
-      assert.match(source, /onPress=\{\(\) => onOpen\(u\)\}/);
-      assert.match(source, /onLongPress=\{\(\) => onCopy\(u\)\}/, 'Long press must still copy');
-    } else {
-      assert.match(source, /<ActionRow label="OPEN URL" onPress=\{onOpenUrl\}/);
-      assert.match(source, /<ActionRow label="COPY" onPress=\{onCopy\}/);
-    }
+    assert.match(source, /onPress=\{\(\) => onOpen\(u\)\}/);
+    assert.match(source, /onLongPress=\{\(\) => onCopy\(u\)\}/, 'Long press must still copy');
     for (const url of [
       'https://instagram.com/Mixed_Name',
       'https://www.instagram.com/Mixed_Name/',
@@ -78,5 +74,5 @@ function handler(source, name, Linking, Alert, Clipboard, url) {
       }
     }
   }
-  console.log('PASS: both screen handlers; canOpenURL false/reject bypassed; original URLs; open success/failure; copy preserved');
+  console.log('PASS: TagRead screen handler; canOpenURL false/reject bypassed; original URLs; open success/failure; copy preserved');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

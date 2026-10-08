@@ -24,7 +24,7 @@ import type { RootStackParamList } from '@/navigation';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'TagRead'>;
 
-/** 읽어낸 태그 정보 — 상세화면으로 넘기기 전까지 이 화면이 들고 있는다 */
+/** 읽어낸 태그 정보 — 수정하기로 넘기기 전까지 이 화면이 들고 있는다 */
 interface ReadTag {
   /** 대표 링크 (NDEF 첫 레코드) */
   url: string;
@@ -39,14 +39,20 @@ export function TagReadScreen({ navigation }: Props) {
   const [tag, setTag] = useState<ReadTag | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [nfcAvailable, setNfcAvailable] = useState(true);
+  // 읽기 전용·NDEF 아님·상태 조회 실패 — ③ 태그 상태 확인으로 안내할 이상 (D8)
+  const [diagnosable, setDiagnosable] = useState(false);
   const readRequest = useRef(0);
   const readPending = useRef(false);
+  const readCancellation = useRef<AbortController | null>(null);
+  const diagnosing = useRef(false);
   const mounted = useRef(false);
 
   useEffect(() => {
     mounted.current = true;
     const unsubscribe = navigation.addListener('blur', () => {
       ++readRequest.current;
+      readCancellation.current?.abort();
+      readCancellation.current = null;
       if (readPending.current) {
         readPending.current = false;
         setReading(false);
@@ -55,6 +61,8 @@ export function TagReadScreen({ navigation }: Props) {
     return () => {
       mounted.current = false;
       ++readRequest.current;
+      readCancellation.current?.abort();
+      readCancellation.current = null;
       readPending.current = false;
       unsubscribe();
     };
@@ -74,13 +82,18 @@ export function TagReadScreen({ navigation }: Props) {
   const onRead = async () => {
     if (readPending.current || !navigation.isFocused()) return;
     const request = ++readRequest.current;
+    // 화면을 떠나면 이 요청의 NFC 세션도 취소해야 다른 NFC 화면(③ 등)이 바로 열린다.
+    const cancellation = new AbortController();
+    readCancellation.current = cancellation;
     readPending.current = true;
     setReading(true);
     setErrorMsg(null);
+    setDiagnosable(false);
     setTag(null); // 새 읽기가 실패/취소돼도 이전 태그로 수정하기에 진입하지 않는다.
     try {
-      const result = await NfcService.readUrl();
+      const result = await NfcService.readUrl(cancellation.signal);
       if (!mounted.current || request !== readRequest.current || !navigation.isFocused()) return;
+      setDiagnosable(result.writable === false || result.reason === 'not_ndef' || result.reason === 'status_unknown');
       if (result.ok && result.url) {
         setTag({
           url: result.url,
@@ -98,6 +111,7 @@ export function TagReadScreen({ navigation }: Props) {
     } finally {
       if (mounted.current && request === readRequest.current) {
         readPending.current = false;
+        readCancellation.current = null;
         setReading(false);
       }
     }
@@ -121,14 +135,21 @@ export function TagReadScreen({ navigation }: Props) {
     );
   };
 
-  /** 확인 후 상세 화면으로 — 태그가 알려준 실제 값을 넘긴다 */
-  const onOpenDetail = () => {
-    if (!tag || readPending.current || !navigation.isFocused()) return;
-    navigation.navigate('TagInfo', {
-      url: tag.url,
-      writable: tag.writable ?? false,
-      capacity: tag.capacity,
-    });
+  /**
+   * 이상 안내 → ③ 태그 상태 확인 (D8). 앞선 NFC 세션의 정리가 끝난 뒤에 연다.
+   * ③의 나가는 길은 홈뿐이므로 ①을 남기지 않고 [홈, ③]으로 연다.
+   */
+  const onOpenDiagnosis = async () => {
+    if (diagnosing.current || readPending.current || !navigation.isFocused()) return;
+    diagnosing.current = true;
+    const request = readRequest.current;
+    try {
+      await NfcService.whenIdle();
+      if (!mounted.current || request !== readRequest.current || !navigation.isFocused()) return;
+      navigation.reset({ index: 1, routes: [{ name: 'Home' }, { name: 'TagInfo' }] });
+    } finally {
+      diagnosing.current = false;
+    }
   };
 
   const canEdit = tag?.writable === true && typeof tag.capacity === 'number' &&
@@ -211,6 +232,16 @@ export function TagReadScreen({ navigation }: Props) {
 
             <View style={{ height: AppSpacing.sm }} />
             <Text style={styles.hint}>탭하면 링크 열기 · 길게 누르면 주소 복사</Text>
+            {tag.writable === false ? (
+              <>
+                <View style={{ height: AppSpacing.lg }} />
+                <AppInfoCard
+                  title="읽기 전용 태그"
+                  message="이 태그는 잠겨 있어 수정할 수 없습니다. 태그 상태 확인에서 자세한 상태를 볼 수 있습니다."
+                  variant="warning"
+                />
+              </>
+            ) : null}
           </>
         ) : null}
 
@@ -238,18 +269,30 @@ export function TagReadScreen({ navigation }: Props) {
           // 읽은 뒤 — 확인하고 넘어가거나 다시 읽거나
           <>
             <AppPrimaryButton label="수정하기" onPress={onEditTag} disabled={!canEdit} />
-            <View style={{ height: AppSpacing.itemGap }} />
-            <AppSecondaryButton label="상세 정보 보기" onPress={onOpenDetail} />
+            {diagnosable ? (
+              <>
+                <View style={{ height: AppSpacing.itemGap }} />
+                <AppSecondaryButton label="태그 상태 확인" onPress={onOpenDiagnosis} />
+              </>
+            ) : null}
             <View style={{ height: AppSpacing.itemGap }} />
             <AppSecondaryButton label="다시 읽기" onPress={onRead} />
           </>
         ) : (
-          <AppPrimaryButton
-            label={reading ? '태그를 대세요…' : '태그 읽기'}
-            onPress={onRead}
-            disabled={!nfcAvailable}
-            loading={reading}
-          />
+          <>
+            <AppPrimaryButton
+              label={reading ? '태그를 대세요…' : '태그 읽기'}
+              onPress={onRead}
+              disabled={!nfcAvailable}
+              loading={reading}
+            />
+            {diagnosable ? (
+              <>
+                <View style={{ height: AppSpacing.itemGap }} />
+                <AppSecondaryButton label="태그 상태 확인" onPress={onOpenDiagnosis} />
+              </>
+            ) : null}
+          </>
         )}
       </View>
     </SafeAreaView>

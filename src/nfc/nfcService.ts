@@ -55,6 +55,29 @@ export interface NfcReadResult {
   message: string;
 }
 
+/** NdefStatus 3상태 (HANDOFF §4.10). 상태를 조회하지 못한 경우는 상태가 아니라 status_unknown 실패다. */
+export type NfcTagState = 'read_write' | 'read_only' | 'not_ndef';
+
+/**
+ * ③ 진단 결과 — 한 번의 조회에서 나온 값만 담는다. 알 수 없는 값은 undefined이며 상수로 채우지 않는다.
+ * not_ndef는 용량·메시지가 없으므로 capacity/usedBytes/recordCount도 없다.
+ */
+export type NfcInspectResult =
+  | {
+    ok: true;
+    state: NfcTagState;
+    /** 태그가 보고한 용량(byte) */
+    capacity?: number;
+    /** 읽은 전체 NDEF 메시지를 그대로 직렬화한 길이. 직렬화할 수 없으면 undefined (URL로 추정하지 않는다) */
+    usedBytes?: number;
+    /** 읽은 전체 메시지의 레코드 수 — URL이 아닌 레코드 포함. 빈 태그는 0 */
+    recordCount?: number;
+    /** 그중 http(s) URL로 읽히는 링크 */
+    urls: string[];
+    message: string;
+  }
+  | { ok: false; reason: NfcFailureReason; message: string };
+
 /** feature-spec.md 의 "User Message Direction" 에 맞춘 사용자 안내 문구 */
 const MESSAGES: Record<NfcFailureReason, string> = {
   unsupported: '이 기기는 NFC를 지원하지 않습니다.',
@@ -104,7 +127,7 @@ let pendingNdefCleanup: Promise<void> | undefined;
  */
 async function withNdefSession<T>(
   alertMessage: string,
-  work: () => Promise<T>,
+  work: (connectedTech: string | null | undefined) => Promise<T>,
   signal?: AbortSignal,
 ): Promise<T> {
   // Android 취소는 태그 이벤트 등록 해제까지 비동기로 끝난다. 다음 요청은 그 뒤에 연다.
@@ -122,9 +145,9 @@ async function withNdefSession<T>(
   const onAbort = () => { void cancel(); };
   signal?.addEventListener('abort', onAbort);
   try {
-    await NfcManager.requestTechnology(NfcTech.Ndef, { alertMessage });
+    const connectedTech = await NfcManager.requestTechnology(NfcTech.Ndef, { alertMessage });
     if (signal?.aborted) throw new Error('cancelled');
-    const result = await work();
+    const result = await work(connectedTech);
     if (signal?.aborted) throw new Error('cancelled');
     return result;
   } finally {
@@ -149,14 +172,35 @@ async function ensureReady(): Promise<NfcFailureReason | null> {
   return null;
 }
 
-/** Android는 내부 조회 오류도 NotSupported/capacity=0으로 반환한다. 우회하지 않는다. */
-async function getCheckedNdefStatus() {
+type TagStatus =
+  | { kind: 'ready'; writable: boolean; capacity: number }
+  | { kind: 'not_ndef' }
+  | { kind: 'unknown' };
+
+const ANDROID_NDEF_TECH = 'android.nfc.tech.Ndef';
+
+/**
+ * 태그 상태 조회 — 확인되지 않으면 'unknown'이고 호출부는 쓰지 않고 멈춘다 (판정 1).
+ * Android 라이브러리는 조회 오류도 NotSupported/capacity=0으로 돌려주므로 그 값만으로는 미지원 증거가 아니다.
+ * Android의 미지원 증거는 "태그는 잡혔지만 Ndef 기술이 맞지 않음" 하나뿐이다:
+ * requestTechnology가 정확히 null을 돌려주고 태그의 techTypes에 Ndef가 없을 때.
+ * (Ndef가 있는데 null이면 연결 실패 — 태그 이동 등 — 이므로 확인 불가로 둔다.)
+ */
+async function getTagStatus(connectedTech: string | null | undefined): Promise<TagStatus> {
   const status = await NfcManager.ndefHandler.getNdefStatus().catch(() => null);
-  if (status?.status === NdefStatus.NotSupported && Platform.OS === 'ios') return status;
-  if (!status ||
-      (status.status !== NdefStatus.ReadWrite && status.status !== NdefStatus.ReadOnly) ||
-      !Number.isSafeInteger(status.capacity) || status.capacity <= 0) return null;
-  return status;
+  if (status?.status === NdefStatus.NotSupported && Platform.OS === 'ios') return { kind: 'not_ndef' };
+  if (status &&
+      (status.status === NdefStatus.ReadWrite || status.status === NdefStatus.ReadOnly) &&
+      Number.isSafeInteger(status.capacity) && status.capacity > 0) {
+    return { kind: 'ready', writable: status.status === NdefStatus.ReadWrite, capacity: status.capacity };
+  }
+  if (Platform.OS === 'android' && connectedTech === null) {
+    const techTypes = (await NfcManager.getTag().catch(() => null))?.techTypes;
+    if (Array.isArray(techTypes) && techTypes.length > 0 && !techTypes.includes(ANDROID_NDEF_TECH)) {
+      return { kind: 'not_ndef' };
+    }
+  }
+  return { kind: 'unknown' };
 }
 
 /** Native type=byte[]; Android id=hex 문자열, iOS id=byte[]. 모든 필드와 순서 유지. */
@@ -245,12 +289,12 @@ export const NfcService = {
       checkCancelled();
       if (notReady) return fail(notReady);
       if (snapshot.length === 0) return fail('failed');
-      return await withNdefSession('태그에 링크를 쓰는 중입니다.\n휴대폰 뒷면을 태그에 대주세요.', async () => {
+      return await withNdefSession('태그에 링크를 쓰는 중입니다.\n휴대폰 뒷면을 태그에 대주세요.', async (connectedTech) => {
         // 태그 상태 확인 — 쓰기 가능 여부와 실제 용량을 먼저 본다
-        const status = await getCheckedNdefStatus();
-        if (!status) return fail('status_unknown');
-        if (status.status === NdefStatus.NotSupported) return fail('not_ndef');
-        if (status.status === NdefStatus.ReadOnly) return fail('read_only');
+        const status = await getTagStatus(connectedTech);
+        if (status.kind === 'unknown') return fail('status_unknown');
+        if (status.kind === 'not_ndef') return fail('not_ndef');
+        if (!status.writable) return fail('read_only');
 
         const bytes = Ndef.encodeMessage(snapshot.map((u) => Ndef.uriRecord(u)));
         if (!bytes) return fail('failed');
@@ -304,10 +348,10 @@ export const NfcService = {
     try {
       const notReady = await ensureReady();
       if (notReady) return fail(notReady);
-      return await withNdefSession('태그를 읽는 중입니다.\n휴대폰 뒷면을 태그에 대주세요.', async () => {
-        const status = await getCheckedNdefStatus();
-        if (!status) return fail('status_unknown');
-        if (status.status === NdefStatus.NotSupported) return fail('not_ndef');
+      return await withNdefSession('태그를 읽는 중입니다.\n휴대폰 뒷면을 태그에 대주세요.', async (connectedTech) => {
+        const status = await getTagStatus(connectedTech);
+        if (status.kind === 'unknown') return fail('status_unknown');
+        if (status.kind === 'not_ndef') return fail('not_ndef');
         const tag = await NfcManager.getTag();
         if (!tag) return fail('failed');
 
@@ -318,7 +362,7 @@ export const NfcService = {
             ...fail('no_url'),
             urls: [],
             capacity: status.capacity,
-            writable: status.status === NdefStatus.ReadWrite,
+            writable: status.writable,
           };
         }
 
@@ -337,7 +381,7 @@ export const NfcService = {
           url,
           urls,
           capacity: status.capacity,
-          writable: status.status === NdefStatus.ReadWrite,
+          writable: status.writable,
           message: '태그를 읽었습니다.',
         };
       }, signal);
@@ -345,5 +389,56 @@ export const NfcService = {
       const reason = signal?.aborted ? 'cancelled' : classifyError(err);
       return { ok: false, reason, message: MESSAGES[reason] };
     }
+  },
+
+  /**
+   * ③ 태그 상태 확인 (HANDOFF §4.10) — 진단 전용. 태그를 한 번 읽기만 하고 쓰지 않는다.
+   * URL이 없는 텍스트·혼합·빈 태그도 진단 대상이다. 상태를 확인하지 못하면 status_unknown.
+   */
+  async inspectTag(signal?: AbortSignal): Promise<NfcInspectResult> {
+    try {
+      const notReady = await ensureReady();
+      if (notReady) return fail(notReady);
+      return await withNdefSession('태그 상태를 확인하는 중입니다.\n휴대폰 뒷면을 태그에 대주세요.', async (connectedTech) => {
+        const status = await getTagStatus(connectedTech);
+        if (signal?.aborted) throw new Error('cancelled');
+        if (status.kind === 'unknown') return fail('status_unknown');
+        if (status.kind === 'not_ndef') {
+          return { ok: true as const, state: 'not_ndef' as const, urls: [], message: '태그 상태를 확인했습니다.' };
+        }
+        const tag = await NfcManager.getTag();
+        if (!tag) return fail('failed');
+
+        // 빈 태그: 레코드가 없거나 TNF_EMPTY뿐 — 0개·0 B (readUrl의 빈 태그 판정과 같다)
+        const records = tag.ndefMessage ?? [];
+        const blank = records.length === 0 || records.every((record) => record.tnf === Ndef.TNF_EMPTY);
+        let usedBytes: number | undefined;
+        if (blank) {
+          usedBytes = 0;
+        } else {
+          try {
+            usedBytes = encodeNativeRecords(records).length;
+          } catch {
+            // 직렬화할 수 없으면 URL 기반 추정으로 채우지 않고 확인 불가로 둔다
+          }
+        }
+        return {
+          ok: true as const,
+          state: status.writable ? 'read_write' as const : 'read_only' as const,
+          capacity: status.capacity,
+          usedBytes,
+          recordCount: blank ? 0 : records.length,
+          urls: blank ? [] : extractUrls(records as never),
+          message: '태그 상태를 확인했습니다.',
+        };
+      }, signal);
+    } catch (err) {
+      return fail(signal?.aborted ? 'cancelled' : classifyError(err));
+    }
+  },
+
+  /** 앞선 NFC 세션의 정리(취소·이벤트 해제)가 끝날 때까지 기다린다. 다른 NFC 화면을 열기 전에 호출한다. */
+  async whenIdle(): Promise<void> {
+    await pendingNdefCleanup;
   },
 };

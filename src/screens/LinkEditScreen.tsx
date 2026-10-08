@@ -32,6 +32,9 @@ export function LinkEditScreen({ navigation, route }: Props) {
   const [ready, setReady] = useState(false);
   const [reading, setReading] = useState(false);
   const [readError, setReadError] = useState<string | null>(null);
+  // 읽기 전용·NDEF 아님·상태 조회 실패 — ③ 태그 상태 확인으로 안내할 이상 (D8)
+  const [diagnosable, setDiagnosable] = useState(false);
+  const diagnosing = useRef(false);
   const readRequest = useRef(0);
   const readPending = useRef(false);
   const readCancellation = useRef<AbortController | null>(null);
@@ -62,6 +65,7 @@ export function LinkEditScreen({ navigation, route }: Props) {
     setReady(false);
     setReading(true);
     setReadError(null);
+    setDiagnosable(false);
     clear(); // 읽기 전 이전 태그의 목록과 용량을 사용할 수 없게 한다.
     try {
       const result = await NfcService.readUrl(cancellation.signal);
@@ -74,6 +78,8 @@ export function LinkEditScreen({ navigation, route }: Props) {
         replaceFromTag(urls, result.capacity);
         setReady(true);
       } else {
+        setDiagnosable(result.writable === false || result.ok ||
+          result.reason === 'not_ndef' || result.reason === 'status_unknown');
         setReadError(result.writable === false
           ? '이 태그는 읽기 전용이라 수정할 수 없습니다.'
           : result.ok ? '태그 상태를 확인할 수 없습니다. 다시 읽어주세요.' : result.message);
@@ -107,6 +113,7 @@ export function LinkEditScreen({ navigation, route }: Props) {
     });
     setReady(false);
     setReadError(null);
+    setDiagnosable(false);
     if (route.params) {
       const { urls, capacity: tagCapacity, writable } = route.params;
       clear();
@@ -115,6 +122,7 @@ export function LinkEditScreen({ navigation, route }: Props) {
         replaceFromTag(urls, tagCapacity);
         setReady(true);
       } else {
+        setDiagnosable(true);
         setReadError(writable === false
           ? '이 태그는 읽기 전용이라 수정할 수 없습니다.'
           : '태그 상태를 확인할 수 없습니다. 다시 읽어주세요.');
@@ -141,6 +149,24 @@ export function LinkEditScreen({ navigation, route }: Props) {
   const totalCapacity = NdefSize.isValidCapacity(capacity) ? capacity : undefined;
   const overCapacity = totalCapacity !== undefined && usedBytes > totalCapacity;
   const cannotSave = totalCapacity === undefined || overCapacity;
+
+  /**
+   * 이상 안내·쓰기 실패 → ③ 태그 상태 확인 (D8·I4). 앞선 NFC 세션의 정리가 끝난 뒤에 연다.
+   * ③의 나가는 길은 홈뿐이므로 ②를 남기지 않고 [홈, ③]으로 연다. 편집 중인 링크는 지우지 않는다
+   * (다음 ② 진입은 K13대로 태그를 새로 읽어 교체한다).
+   */
+  const onOpenDiagnosis = async () => {
+    if (diagnosing.current || readPending.current || writePending.current || !navigation.isFocused()) return;
+    diagnosing.current = true;
+    const request = readRequest.current;
+    try {
+      await NfcService.whenIdle();
+      if (!mounted.current || request !== readRequest.current || !navigation.isFocused()) return;
+      navigation.reset({ index: 1, routes: [{ name: 'Home' }, { name: 'TagInfo' }] });
+    } finally {
+      diagnosing.current = false;
+    }
+  };
 
   const onAddLink = () => {
     if (!ready || reading || writePending.current || dragging || !navigation.isFocused()) return;
@@ -212,7 +238,7 @@ export function LinkEditScreen({ navigation, route }: Props) {
 
   if (writing) return <WriteWaitingScreen stage={writeStage} onCancel={cancelWrite} />;
   if (errorMsg) return <WriteFailureScreen message={errorMsg} links={links} capacity={capacity}
-    onRewrite={onSave} onEdit={() => setErrorMsg(null)} />;
+    onRewrite={onSave} onEdit={() => setErrorMsg(null)} onDiagnose={onOpenDiagnosis} />;
 
   if (!ready) {
     return (
@@ -230,6 +256,12 @@ export function LinkEditScreen({ navigation, route }: Props) {
         </ScrollView>
         <View style={styles.footer}>
           <AppPrimaryButton label={reading ? '태그를 대세요…' : '다시 읽기'} onPress={onRead} loading={reading} />
+          {diagnosable ? (
+            <>
+              <View style={{ height: AppSpacing.itemGap }} />
+              <AppSecondaryButton label="태그 상태 확인" onPress={onOpenDiagnosis} />
+            </>
+          ) : null}
         </View>
       </SafeAreaView>
     );

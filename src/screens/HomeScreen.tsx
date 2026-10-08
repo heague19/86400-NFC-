@@ -50,6 +50,14 @@ export function HomeScreen({ navigation }: Props) {
           description="태그에 담을 링크를 편집합니다."
           onPress={() => navigation.navigate('LinkEdit')}
         />
+        <View style={{ height: AppSpacing.itemGap }} />
+        {/* 화면 이동만 한다 — 홈에서는 NFC 세션을 열지 않는다 (§4.1). 읽기는 ③이 스스로 시작한다. */}
+        <AppActionCard
+          icon={APP_ICONS.shield}
+          title="태그 상태 확인"
+          description="태그의 상태와 용량을 확인합니다."
+          onPress={() => navigation.navigate('TagInfo')}
+        />
       </ScrollView>
     </SafeAreaView>
   );

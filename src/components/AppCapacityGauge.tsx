@@ -14,16 +14,18 @@ interface Props {
   used: number;
   /** 태그가 보고한 전체 용량 */
   total: number | undefined;
-  /** 태그에 들어 있는 링크 개수 */
-  linkCount: number;
+  /** 태그에 들어 있는 링크 개수. 링크 수가 아닌 진단(③)에서는 생략한다. */
+  linkCount?: number;
 }
+
+const linkPrefix = (linkCount: number | undefined) => (linkCount === undefined ? '' : `링크 ${linkCount}개 · `);
 
 export function AppCapacityGauge({ used, total, linkCount }: Props) {
   if (!NdefSize.isValidCapacity(total)) {
     return (
       <View>
         <Text style={styles.used}>{used} B</Text>
-        <Text style={styles.total}>링크 {linkCount}개 · 용량 확인 불가</Text>
+        <Text style={styles.total}>{linkPrefix(linkCount)}용량 확인 불가</Text>
       </View>
     );
   }
@@ -45,7 +47,7 @@ export function AppCapacityGauge({ used, total, linkCount }: Props) {
 
         <View style={[styles.badge, (tight || over) && styles.badgeWarn]}>
           <Text style={[styles.badgeText, (tight || over) && styles.badgeTextWarn]}>
-            링크 {linkCount}개 · 여유 {remain} B
+            {linkPrefix(linkCount)}여유 {remain} B
           </Text>
         </View>
       </View>

@@ -5,8 +5,9 @@ import { AppPrimaryButton, AppSecondaryButton } from '@/components/AppButton';
 import type { WriterLink } from '@/state/LinkWriterContext';
 import { AppColors, AppSpacing, AppText } from '@/theme/tokens';
 
-export function WriteFailureScreen({ message, links, capacity, onRewrite, onEdit }: {
-  message: string; links: WriterLink[]; capacity: number | undefined; onRewrite: () => void; onEdit: () => void;
+export function WriteFailureScreen({ message, links, capacity, onRewrite, onEdit, onDiagnose }: {
+  message: string; links: WriterLink[]; capacity: number | undefined;
+  onRewrite: () => void; onEdit: () => void; onDiagnose: () => void;
 }) {
   return <SafeAreaView style={styles.safe} edges={['bottom']}>
     <ScrollView contentContainerStyle={styles.content}>
@@ -23,6 +24,9 @@ export function WriteFailureScreen({ message, links, capacity, onRewrite, onEdit
       <AppPrimaryButton label="전체 재쓰기" onPress={onRewrite} />
       <View style={{ height: AppSpacing.sm }} />
       <AppSecondaryButton label="편집으로 돌아가기" onPress={onEdit} />
+      <View style={{ height: AppSpacing.sm }} />
+      {/* §4.9-5 보조 동선 — 태그 자체의 문제인지 가려낸다 */}
+      <AppSecondaryButton label="태그 상태 확인" onPress={onDiagnose} />
     </View>
   </SafeAreaView>;
 }

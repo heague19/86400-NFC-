@@ -239,7 +239,6 @@ const invalidCapacities = [undefined, null, 0, -1, NaN, Infinity, 1.5, '144', Nu
     for (const url of list) assert.equal(size.NdefSize.estimateUrlRecordBytes(url), encodedBytes([url]));
   }
   const Gauge = load('src/components/AppCapacityGauge.tsx', imports).AppCapacityGauge;
-  const TagInfo = load('src/screens/TagInfoScreen.tsx', imports).TagInfoScreen;
   const textOf = (tree) => nodes(tree).filter((n) => n.type === 'Text').flatMap((n) => n.props.children).join(' ').replace(/\s+/g, ' ');
   for (const capacity of invalidCapacities) {
     assert.equal(size.NdefSize.canStoreAll(['https://a.co'], capacity), false);
@@ -247,10 +246,6 @@ const invalidCapacities = [undefined, null, 0, -1, NaN, Infinity, 1.5, '144', Nu
     assert.ok(textOf(gauge).includes('용량 확인 불가'));
     assert.ok(!textOf(gauge).includes('여유') && !textOf(gauge).includes('/'));
     assert.ok(!JSON.stringify(gauge).includes('width'), 'Unknown capacity has no percentage bar');
-    const info = TagInfo({ route: { params: { url: 'https://a.co', writable: true, capacity } } });
-    const items = nodes(info).filter((n) => n.type?.name === 'InfoItem').map((n) => n.props);
-    assert.equal(items.find((p) => p.label === 'Max Storage').value, '용량 확인 불가');
-    assert.equal(items.find((p) => p.label === 'Used Storage').value, '9 byte');
 
     for (const entry of ['read', 'params']) {
       readResult = { ...success(['https://a.co']), capacity };
@@ -278,10 +273,6 @@ const invalidCapacities = [undefined, null, 0, -1, NaN, Infinity, 1.5, '144', Nu
     const gauge = boundary.find('AppCapacityGauge');
     assert.equal(gauge.total, capacity); assert.equal(gauge.used, 140);
     assert.ok(textOf(Gauge(gauge)).includes(`여유 ${Math.max(capacity - 140, 0)} B`));
-    const info = TagInfo({ route: { params: { url: boundaryUrl, writable: true, capacity } } });
-    const items = nodes(info).filter((n) => n.type?.name === 'InfoItem').map((n) => n.props);
-    assert.equal(items.find((p) => p.label === 'Max Storage').value, `${capacity} byte`);
-    assert.equal(items.find((p) => p.label === 'Used Storage').value, `140 byte (${Math.round(Math.min(140 / capacity, 1) * 100)}%)`);
     const save = boundary.find('AppPrimaryButton', (p) => p.label === '저장');
     assert.equal(save.disabled, capacity < 140);
     await save.onPress(); await boundary.settle();

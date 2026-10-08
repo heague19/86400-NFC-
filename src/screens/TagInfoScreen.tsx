@@ -2,7 +2,7 @@
 // 읽어온 태그의 URL·정보 표시 + 동작(열기/복사)
 //
 // TagRead 에서 읽어낸 실제 태그 값(URL·용량·쓰기가능)을 받아 표시한다.
-// capacity 가 없으면 NTAG213 기본값(144byte)으로 폴백.
+// 용량을 모르면 용량과 사용 비율을 표시하지 않는다.
 
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import * as Clipboard from 'expo-clipboard';
@@ -45,9 +45,8 @@ export function TagInfoScreen({ route }: Props) {
     ?? detectLinkTypeFromUrl(url);
 
   const used = NdefSize.estimateUrlRecordBytes(url);
-  // 실기기에서 태그가 알려준 실제 용량을 우선 사용 (없으면 NTAG213 기본값)
-  const total = capacity ?? NdefSize.maxBytes;
-  const percent = Math.round(Math.min(used / total, 1) * 100);
+  const total = NdefSize.isValidCapacity(capacity) ? capacity : undefined;
+  const percent = total === undefined ? undefined : Math.round(Math.min(used / total, 1) * 100);
 
   const onOpenUrl = async () => {
     try {
@@ -93,12 +92,12 @@ export function TagInfoScreen({ route }: Props) {
         <View style={{ height: AppSpacing.xl }} />
         <View style={styles.infoGrid}>
           <InfoItem label="Tag Type" value={linkType?.label ?? '링크'} />
-          <InfoItem label="Max Storage" value={`${total} byte`} />
+          <InfoItem label="Max Storage" value={total === undefined ? '용량 확인 불가' : `${total} byte`} />
         </View>
         <View style={{ height: AppSpacing.lg }} />
         <View style={styles.infoGrid}>
           <InfoItem label="Write Ability" value={writable ? 'True' : 'False'} />
-          <InfoItem label="Used Storage" value={`${used} byte (${percent}%)`} />
+          <InfoItem label="Used Storage" value={percent === undefined ? `${used} byte` : `${used} byte (${percent}%)`} />
         </View>
 
         <View style={{ height: AppSpacing.xxl }} />

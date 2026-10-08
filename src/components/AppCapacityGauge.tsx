@@ -1,25 +1,33 @@
 // 태그 용량 게이지 — 시안(135 / 141 B · 링크 N개 · 여유 M B) 이식
 //
 // 분모(capacity)는 추정하지 않는다. 태그가 getNdefStatus()로 보고한 실측값만 쓴다.
-// 태그가 값을 안 주는 경우에만 NTAG213 기본값으로 폴백한다.
+// 용량 불명일 때는 사용량만 표시하고 비율·남은 용량은 계산하지 않는다.
 
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { AppColors, AppOpacity, AppRadius, AppSpacing, AppText } from '@/theme/tokens';
+import { NdefSize } from '@/utils/ndefSize';
 
 interface Props {
   /** 실제 쓰인 바이트 */
   used: number;
   /** 태그가 보고한 전체 용량 */
-  total: number;
+  total: number | undefined;
   /** 태그에 들어 있는 링크 개수 */
   linkCount: number;
 }
 
 export function AppCapacityGauge({ used, total, linkCount }: Props) {
-  const safeTotal = total > 0 ? total : 1;
-  const ratio = Math.min(used / safeTotal, 1);
+  if (!NdefSize.isValidCapacity(total)) {
+    return (
+      <View>
+        <Text style={styles.used}>{used} B</Text>
+        <Text style={styles.total}>링크 {linkCount}개 · 용량 확인 불가</Text>
+      </View>
+    );
+  }
+  const ratio = Math.min(used / total, 1);
   const remain = Math.max(total - used, 0);
 
   // 여유가 거의 없으면 색으로 먼저 알린다 (수치를 읽기 전에 보이도록)

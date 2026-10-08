@@ -147,11 +147,8 @@ export function TagReadScreen({ navigation }: Props) {
   const linkType = tag ? detectLinkTypeFromUrl(tag.url) : undefined;
 
   // 게이지는 태그에 실제로 들어 있는 전체 링크를 합산한다
-  const bytes = tag
-    ? tag.urls.reduce((sum, u) => sum + NdefSize.estimateUrlRecordBytes(u), 0)
-    : 0;
-  // 태그가 알려준 실제 용량 우선 (없으면 NTAG213 기본값)
-  const total = tag?.capacity ?? NdefSize.maxBytes;
+  const bytes = tag ? NdefSize.estimateMessageBytes(tag.urls) : 0;
+  const total = tag?.capacity;
 
   return (
     <SafeAreaView style={styles.safe} edges={['bottom']}>

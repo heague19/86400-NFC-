@@ -138,9 +138,9 @@ export function LinkEditScreen({ navigation, route }: Props) {
 
   const urls = links.map((l) => l.normalizedUrl);
   const usedBytes = NdefSize.estimateMessageBytes(urls);
-  // 실측 용량은 Context에 보존한다. 게이지/초과 판정에 연결하는 작업은 4-1에서 처리한다.
-  const totalCapacity = NdefSize.maxBytes;
-  const overCapacity = usedBytes > totalCapacity;
+  const totalCapacity = NdefSize.isValidCapacity(capacity) ? capacity : undefined;
+  const overCapacity = totalCapacity !== undefined && usedBytes > totalCapacity;
+  const cannotSave = totalCapacity === undefined || overCapacity;
 
   const onAddLink = () => {
     if (!ready || reading || writePending.current || dragging || !navigation.isFocused()) return;
@@ -173,7 +173,7 @@ export function LinkEditScreen({ navigation, route }: Props) {
   };
 
   const onSave = async () => {
-    if (!ready || reading || writePending.current || dragging || !navigation.isFocused() || links.length === 0 || overCapacity) return;
+    if (!ready || reading || writePending.current || dragging || !navigation.isFocused() || links.length === 0 || cannotSave) return;
     const request = ++writeRequest.current;
     const cancellation = new AbortController();
     writeCancellation.current = cancellation;
@@ -326,7 +326,7 @@ export function LinkEditScreen({ navigation, route }: Props) {
         <AppPrimaryButton
           label="저장"
           onPress={onSave}
-          disabled={!ready || reading || dragging || links.length === 0 || overCapacity}
+          disabled={!ready || reading || dragging || links.length === 0 || cannotSave}
           loading={writing}
         />
       </View>

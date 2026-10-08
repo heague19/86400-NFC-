@@ -79,7 +79,7 @@ function load(file, imports) {
 }
 
 const model = load('src/models/linkType.ts', {});
-const size = load('src/utils/ndefSize.ts', {});
+const size = load('src/utils/ndefSize.ts', { 'react-native-nfc-manager': { Ndef: require('react-native-nfc-manager/ndef-lib') } });
 const normalizer = load('src/utils/urlNormalizer.ts', {});
 const state = load('src/state/LinkWriterContext.tsx', {
   react: React, '@/models/linkType': model, '@/utils/ndefSize': size, '@/utils/urlNormalizer': normalizer,
@@ -224,8 +224,83 @@ const urls = [
 const success = (list = urls, capacity = 512) => ({ ok: true, url: list[0], urls: list, capacity, writable: true, message: 'read' });
 const deferred = () => { let resolve, reject; const promise = new Promise((r, j) => { resolve = r; reject = j; }); return { promise, resolve, reject }; };
 const contextUrls = (h) => h.context.links.map((l) => l.normalizedUrl);
+const NdefCodec = require('react-native-nfc-manager/ndef-lib');
+const encodedBytes = (list) => NdefCodec.encodeMessage(list.map((url) => NdefCodec.uriRecord(url))).length;
+const boundaryUrl = `https://example.com/${'a'.repeat(123)}`;
+const invalidCapacities = [undefined, null, 0, -1, NaN, Infinity, 1.5, '144', Number.MAX_SAFE_INTEGER + 1];
 
 (async () => {
+  // 4-1/4-2: execute actual utilities, gauge, screens, provider and save handlers.
+  assert.equal(encodedBytes([boundaryUrl]), 140, 'Same valid URL lies between 137 B and 144 B');
+  for (const list of [[], [boundaryUrl], ['HTTPS://example.com/Mixed'], ['https://example.com/홍길동'],
+    ['https://example.com/' + 'a'.repeat(254)], ['https://example.com/' + 'a'.repeat(300)],
+    ['https://a.co', 'https://a.co', 'http://www.example.com/😀']]) {
+    assert.equal(size.NdefSize.estimateMessageBytes(list), list.length ? encodedBytes(list) : 0);
+    for (const url of list) assert.equal(size.NdefSize.estimateUrlRecordBytes(url), encodedBytes([url]));
+  }
+  const Gauge = load('src/components/AppCapacityGauge.tsx', imports).AppCapacityGauge;
+  const TagInfo = load('src/screens/TagInfoScreen.tsx', imports).TagInfoScreen;
+  const textOf = (tree) => nodes(tree).filter((n) => n.type === 'Text').flatMap((n) => n.props.children).join(' ').replace(/\s+/g, ' ');
+  for (const capacity of invalidCapacities) {
+    assert.equal(size.NdefSize.canStoreAll(['https://a.co'], capacity), false);
+    const gauge = Gauge({ used: 14, total: capacity, linkCount: 1 });
+    assert.ok(textOf(gauge).includes('용량 확인 불가'));
+    assert.ok(!textOf(gauge).includes('여유') && !textOf(gauge).includes('/'));
+    assert.ok(!JSON.stringify(gauge).includes('width'), 'Unknown capacity has no percentage bar');
+    const info = TagInfo({ route: { params: { url: 'https://a.co', writable: true, capacity } } });
+    const items = nodes(info).filter((n) => n.type?.name === 'InfoItem').map((n) => n.props);
+    assert.equal(items.find((p) => p.label === 'Max Storage').value, '용량 확인 불가');
+    assert.equal(items.find((p) => p.label === 'Used Storage').value, '9 byte');
+
+    for (const entry of ['read', 'params']) {
+      readResult = { ...success(['https://a.co']), capacity };
+      const unknown = new Harness();
+      if (entry === 'read') unknown.enterEdit();
+      else unknown.dispatch({ type: 'NAVIGATE', payload: { name: 'LinkEdit', params: { urls: ['https://a.co'], capacity, writable: true } } });
+      await unknown.settle();
+      assert.equal(unknown.context.capacity, undefined);
+      assert.ok(!nodes(unknown.editor.tree).some((n) => n.props?.label === '저장'), `${entry}: bad capacity never opens editing`);
+      assert.equal(writes.length, 0); unknown.dispose();
+    }
+    // Reader still shows measured usage without substituting a denominator.
+    readResult = { ...success(['https://a.co']), capacity };
+    const reader = new Harness();
+    reader.dispatch({ type: 'NAVIGATE', payload: { name: 'TagRead' } }); await reader.settle();
+    await reader.press('태그 읽기'); await reader.settle();
+    const readerGauge = reader.find('AppCapacityGauge');
+    assert.ok(textOf(Gauge(readerGauge)).includes('용량 확인 불가'));
+    assert.equal(readerGauge.used, encodedBytes(['https://a.co'])); reader.dispose();
+  }
+  for (const capacity of [137, 139, 140, 144, 512]) {
+    assert.equal(size.NdefSize.canStoreAll([boundaryUrl], capacity), capacity >= 140);
+    readResult = success([boundaryUrl], capacity);
+    const boundary = new Harness(); boundary.enterEdit(); await boundary.settle();
+    const gauge = boundary.find('AppCapacityGauge');
+    assert.equal(gauge.total, capacity); assert.equal(gauge.used, 140);
+    assert.ok(textOf(Gauge(gauge)).includes(`여유 ${Math.max(capacity - 140, 0)} B`));
+    const info = TagInfo({ route: { params: { url: boundaryUrl, writable: true, capacity } } });
+    const items = nodes(info).filter((n) => n.type?.name === 'InfoItem').map((n) => n.props);
+    assert.equal(items.find((p) => p.label === 'Max Storage').value, `${capacity} byte`);
+    assert.equal(items.find((p) => p.label === 'Used Storage').value, `140 byte (${Math.round(Math.min(140 / capacity, 1) * 100)}%)`);
+    const save = boundary.find('AppPrimaryButton', (p) => p.label === '저장');
+    assert.equal(save.disabled, capacity < 140);
+    await save.onPress(); await boundary.settle();
+    assert.equal(writes.length, capacity < 140 ? 0 : 1, 'Actual save handler enforces measured boundary');
+    if (capacity >= 140) assert.equal(boundary.route.params.usedBytes, 140);
+    boundary.dispose();
+  }
+  // Defensive guard also blocks a stale handler after context capacity becomes unavailable.
+  readResult = success(['https://a.co'], 137);
+  const staleCapacity = new Harness(); staleCapacity.enterEdit(); await staleCapacity.settle();
+  for (const capacity of invalidCapacities) {
+    staleCapacity.context.replaceFromTag(['https://a.co'], capacity); staleCapacity.flush();
+    const save = staleCapacity.find('AppPrimaryButton', (p) => p.label === '저장');
+    assert.equal(save.disabled, true); await save.onPress(); await staleCapacity.settle();
+    assert.equal(writes.length, 0);
+  }
+  staleCapacity.dispose();
+  console.log('PASS: actual serialized bytes (UTF-8, uppercase prefix, long payload, duplicates); 140 B URL blocked at 137/139 and saved at 140/144/512; unknown/zero/invalid capacity has no denominator and cannot save');
+
   readResult = success();
   let h = new Harness();
   h.context.replaceFromTag(['https://previous.example'], 42);
@@ -241,7 +316,7 @@ const contextUrls = (h) => h.context.links.map((l) => l.normalizedUrl);
   assert.deepEqual(contextUrls(h), urls, 'Whole replacement preserves URL order, duplicates and strings');
   assert.deepEqual(h.context.links.map((l) => l.originalInput), urls);
   assert.equal(h.context.capacity, 512);
-  assert.equal(h.find('AppCapacityGauge').total, size.NdefSize.maxBytes, 'Actual gauge denominator stays in 4-1');
+  assert.equal(h.find('AppCapacityGauge').total, 512, 'Gauge uses the read tag capacity');
   const editKey = h.route.key;
   h.press('링크 추가');
   h.find('AppActionCard', (p) => p.title === 'Instagram').onPress(); h.flush();
@@ -251,6 +326,7 @@ const contextUrls = (h) => h.context.links.map((l) => l.normalizedUrl);
   assert.equal(reads, 1, 'Add return does not re-read');
   assert.deepEqual(contextUrls(h), [...urls, 'https://www.instagram.com/new_account/']);
   assert.equal(h.context.capacity, 512);
+  assert.equal(h.find('AppCapacityGauge').total, 512, 'Input return retains measured gauge denominator');
   h.find('Pressable', (p) => nodes(p.children).some((n) => n.type === 'Text' && n.props.children.includes(urls[0]))).onPress();
   h.flush();
   assert.deepEqual(h.route.params, { editIndex: 0 });
@@ -259,9 +335,9 @@ const contextUrls = (h) => h.context.links.map((l) => l.normalizedUrl);
   assert.equal(h.route.key, editKey, 'Edit returns to the same editor');
   assert.equal(reads, 1);
   assert.deepEqual(contextUrls(h), ['https://edited.example/updated', ...urls.slice(1), 'https://www.instagram.com/new_account/']);
-  assert.equal(h.find('AppCapacityGauge').total, size.NdefSize.maxBytes);
-  assert.equal(h.find('AppPrimaryButton', (p) => p.label === '저장').disabled, true, 'Over-capacity still uses the existing constant');
-  h.context.removeLink(2); h.flush(); // Shorten the retained list to fit the existing gauge limit.
+  assert.equal(h.find('AppCapacityGauge').total, h.context.capacity);
+  assert.equal(h.find('AppPrimaryButton', (p) => p.label === '저장').disabled, false, 'The retained list fits the read 512 B capacity');
+  h.context.removeLink(2); h.flush(); // Delete one row before saving the retained list.
   await h.press('저장'); await h.settle();
   assert.deepEqual(writes, [contextUrls(h)], 'Save uses the retained/edited full list');
   const retained = [...contextUrls(h)];
@@ -372,7 +448,7 @@ const contextUrls = (h) => h.context.links.map((l) => l.normalizedUrl);
 
   // 3-7b (0-6): 경고는 추가·저장을 막지 않는다. 막는 것은 URL을 만들 수 없는 입력(빈 값·공백·다른 도메인·http(s) 아님)과 용량 초과뿐.
   const next = (host) => host.find('AppPrimaryButton', (p) => p.label === '다음').disabled;
-  readResult = success(['https://example.com/seed'], 512); h = new Harness(); h.enterEdit(); await h.settle();
+  readResult = success(['https://example.com/seed'], 137); h = new Harness(); h.enterEdit(); await h.settle();
   const releaseKey = h.route.key;
   for (const [label, input, kind, expected] of [
     ['X', 'hong$', '허용 문자', 'https://x.com/hong$'],
@@ -392,7 +468,7 @@ const contextUrls = (h) => h.context.links.map((l) => l.normalizedUrl);
     assert.equal(h.context.links.at(-1).normalizedUrl, expected); assert.equal(h.context.links.at(-1).linkType.label, label);
     assert.ok(cardOf(h, kind).length >= 1, `${label} ${input}: the badge stays visible in the list`);
   }
-  assert.ok(size.NdefSize.estimateMessageBytes(contextUrls(h)) > size.NdefSize.maxBytes);
+  assert.ok(size.NdefSize.estimateMessageBytes(contextUrls(h)) > h.context.capacity);
   assert.equal(h.find('AppPrimaryButton', (p) => p.label === '저장').disabled, true, 'Over-capacity (not the warnings) blocks saving');
   assert.equal(reads, 1);
   // 경고가 붙은 행을 다시 열면 같은 경고가 입력 화면에도 보인다
@@ -400,7 +476,7 @@ const contextUrls = (h) => h.context.links.map((l) => l.normalizedUrl);
   assert.equal(h.route.name, 'InstagramInput'); assert.equal(cardOf(h, '허용 문자').length, 1); h.back();
   // 저장은 경고 행을 포함한 전체 목록을 그대로 쓴다
   while (h.context.links.length > 2) { h.context.removeLink(h.context.links.length - 1); h.flush(); } // seed + hong$ 만 남겨 용량 이내로
-  assert.ok(size.NdefSize.estimateMessageBytes(contextUrls(h)) <= size.NdefSize.maxBytes);
+  assert.ok(size.NdefSize.estimateMessageBytes(contextUrls(h)) <= h.context.capacity);
   assert.equal(cardOf(h, '허용 문자').length, 1);
   assert.equal(h.find('AppPrimaryButton', (p) => p.label === '저장').disabled, false, 'Warnings never block saving');
   await h.press('저장'); await h.settle();
@@ -488,7 +564,7 @@ const contextUrls = (h) => h.context.links.map((l) => l.normalizedUrl);
   readResult = { ok: false, reason: 'no_url', urls: [], capacity: 137, writable: true, message: 'no URLs' };
   h.enterEdit(); await h.settle();
   assert.deepEqual(contextUrls(h), []); assert.equal(h.context.capacity, 137);
-  assert.equal(h.find('AppCapacityGauge').total, size.NdefSize.maxBytes);
+  assert.equal(h.find('AppCapacityGauge').total, h.context.capacity);
   assert.equal(h.find('AppPrimaryButton', (p) => p.label === '저장').disabled, true);
   h.press('링크 추가'); // A confirmed empty tag can start editing.
   h.dispose();
@@ -656,6 +732,8 @@ const contextUrls = (h) => h.context.links.map((l) => l.normalizedUrl);
   h.find('AppTextField').onChangeText('next'); h.flush(); h.press('다음');
   assert.equal(h.route.key, originalKey); assert.equal(reads, 1);
   assert.deepEqual(contextUrls(h), [...continuationUrls, 'https://x.com/next']); assert.equal(h.context.capacity, 137);
+  assert.equal(h.find('AppCapacityGauge').total, 137, 'Completion then input return retains measured denominator');
+  assert.equal(h.find('AppCapacityGauge').used, encodedBytes(contextUrls(h)), 'Continuation updates serialized usage');
   pendingWrite = deferred(); const continuation = h.press('저장');
   assert.equal(writes.length, 3, 'Continuation starts a new NFC write (requires tag contact)');
   pendingWrite.resolve({ ok: true, message: 'saved', usedBytes: 70 }); await continuation; await h.settle();
@@ -683,7 +761,7 @@ const contextUrls = (h) => h.context.links.map((l) => l.normalizedUrl);
 
   // Run the actual service with the actual editor; only the native NFC boundary is mocked.
   const Ndef = require('react-native-nfc-manager/ndef-lib');
-  let nativeTag, holdRequest = false, pendingNativeRequest, cleanupGate;
+  let nativeTag, nativeCapacity = 137, holdRequest = false, pendingNativeRequest, cleanupGate;
   let nativeRequests = 0, nativeCancels = 0;
   let nativeWritten, nativeWriteGate, nativeVerifyGate, nativeMismatch = false;
   const nativeWriteMessages = [];
@@ -703,7 +781,7 @@ const contextUrls = (h) => h.context.links.map((l) => l.normalizedUrl);
     },
     getTag: async () => nativeTag,
     ndefHandler: {
-      getNdefStatus: async () => ({ status: 2, capacity: 137 }),
+      getNdefStatus: async () => ({ status: 2, capacity: nativeCapacity }),
       writeNdefMessage: async (bytes, config) => {
         assert.deepEqual(config, { reconnectAfterWrite: true });
         nativeWritten = bytes; nativeWriteMessages.push([...bytes]);
@@ -725,6 +803,38 @@ const contextUrls = (h) => h.context.links.map((l) => l.normalizedUrl);
     '../utils/urlNormalizer': normalizer,
   }).NfcService;
   readResult = (signal) => actualService.readUrl(signal);
+  writeResult = (urls, opts) => actualService.writeUrls(urls, opts);
+  for (const capacity of [137, 140, 144]) {
+    nativeCapacity = capacity;
+    nativeTag = { ndefMessage: [Ndef.uriRecord(boundaryUrl)] };
+    h = new Harness(); h.enterEdit(); await h.settle();
+    assert.equal(h.find('AppCapacityGauge').total, capacity);
+    const beforeWrite = nativeWriteMessages.length, beforeSession = nativeRequests;
+    await h.find('AppPrimaryButton', (p) => p.label === '저장').onPress(); await h.settle();
+    assert.equal(nativeWriteMessages.length - beforeWrite, capacity < 140 ? 0 : 1);
+    assert.equal(nativeRequests - beforeSession, capacity < 140 ? 0 : 1);
+    if (capacity >= 140) assert.equal(h.route.params.usedBytes, 140);
+    h.dispose();
+  }
+  nativeCapacity = 137;
+  // Native byte verification accepts duplicate/character/format warnings; screen handlers never block them.
+  for (const [label, input, kind] of [['X', 'bad$name', '허용 문자'], ['직접 입력', 'https://bad name', '형식 이상'], ['X', 'duplicate', '중복']]) {
+    nativeTag = { ndefMessage: [] };
+    h = new Harness(); h.enterEdit(); await h.settle();
+    addPreset(h, label, input); h.press('다음');
+    if (kind === '중복') { addPreset(h, label, input); h.press('다음'); }
+    assert.ok(cardOf(h, kind).length > 0, `${kind}: warning is visible`);
+    assert.equal(h.find('AppPrimaryButton', (p) => p.label === '저장').disabled, false);
+    const warnedUrls = contextUrls(h), before = nativeWriteMessages.length;
+    await h.press('저장'); await h.settle();
+    assert.equal(h.route.name, 'WriteComplete', `${kind}: actual service byte verification succeeds`);
+    assert.equal(nativeWriteMessages.length, before + 1);
+    assert.equal(h.route.params.usedBytes, encodedBytes(warnedUrls));
+    assert.deepEqual(Ndef.decodeMessage(nativeWriteMessages.at(-1)).map((r) => Ndef.uri.decodePayload(r.payload)), warnedUrls);
+    h.dispose();
+  }
+  writeResult = undefined;
+  console.log('PASS: actual editor + NFC service: 140 B boundary at 137/140/144; duplicate/character/format warnings reach native write and verified completion');
   const emptyRecord = { tnf: Ndef.TNF_EMPTY, type: [], id: [], payload: [] };
   for (const records of [[], [emptyRecord], [emptyRecord, emptyRecord]]) {
     nativeTag = { ndefMessage: records };
@@ -833,5 +943,5 @@ const contextUrls = (h) => h.context.links.map((l) => l.normalizedUrl);
   assert.equal(h.route.name, 'WriteComplete'); h.dispose(); writeResult = undefined;
   console.log('PASS: native touch drag + unequal rows/autoscroll/cancel/height changes; duplicate IDs/primary invariants; real save handlers/stages/duplicate taps/cancel/late results; native mismatch -> full rewrite -> verified completion bytes; continuation read=0/identity/capacity preserved; Home new tag reset');
   console.log('PASS: actual Home/TagRead/editor/provider/input handlers and installed StackRouter; reads 1/0/0; retained edits/capacity; full replacement/blank tags; URL order/duplicates/strings; failures/cancel; unmount/blur/newer-read races');
-  console.log('PASS: actual service/editor []/TNF_EMPTY replacement, null tag blocks editing/saving, pending native read cancellation on back/blur/unmount, cleanup before retry, completed editor preserves another session, constant gauge retained for 4-1');
+  console.log('PASS: actual service/editor []/TNF_EMPTY replacement, null tag blocks editing/saving, pending native read cancellation on back/blur/unmount, cleanup before retry, completed editor preserves another session, measured gauge capacity retained');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

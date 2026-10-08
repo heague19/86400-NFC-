@@ -61,6 +61,7 @@ export type NfcTagState = 'read_write' | 'read_only' | 'not_ndef';
 /**
  * ③ 진단 결과 — 한 번의 조회에서 나온 값만 담는다. 알 수 없는 값은 undefined이며 상수로 채우지 않는다.
  * not_ndef는 용량·메시지가 없으므로 capacity/usedBytes/recordCount도 없다.
+ * 메시지 필드가 없거나 배열이 아니면(무메시지와 조회 실패를 구분할 수 없음) usedBytes/recordCount도 없다.
  */
 export type NfcInspectResult =
   | {
@@ -70,7 +71,7 @@ export type NfcInspectResult =
     capacity?: number;
     /** 읽은 전체 NDEF 메시지를 그대로 직렬화한 길이. 직렬화할 수 없으면 undefined (URL로 추정하지 않는다) */
     usedBytes?: number;
-    /** 읽은 전체 메시지의 레코드 수 — URL이 아닌 레코드 포함. 빈 태그는 0 */
+    /** 읽은 전체 메시지의 실제 레코드 수 — URL이 아닌 레코드와 TNF_EMPTY 레코드 포함. 무메시지 []만 0 */
     recordCount?: number;
     /** 그중 http(s) URL로 읽히는 링크 */
     urls: string[];
@@ -411,13 +412,16 @@ export const NfcService = {
         const tag = await NfcManager.getTag();
         if (!tag) return fail('failed');
 
-        // 빈 태그: 레코드가 없거나 TNF_EMPTY뿐 — 0개·0 B (readUrl의 빈 태그 판정과 같다)
-        const records = tag.ndefMessage ?? [];
-        const blank = records.length === 0 || records.every((record) => record.tnf === Ndef.TNF_EMPTY);
+        // 진단은 태그에 실제로 기록된 레코드를 그대로 센다. TNF_EMPTY 레코드 1개도 3 B·1개이고,
+        // 실제 무메시지 []만 0 B·0개다 (readUrl이 편집용으로 "빈 태그"로 취급하는 것과 별개).
+        // Android 네이티브는 메시지가 없을 때와 조회가 비었을 때 모두 ndefMessage 필드를 빼므로
+        // (Util.messageToJSON(null) → null → JSONObject.put이 키 제거) 배열이 아니면 []로 추정하지 않는다.
+        const message = tag.ndefMessage as unknown;
+        const records = Array.isArray(message) && message.every((r) => r && typeof r === 'object')
+          ? message as NdefRecord[]
+          : undefined;
         let usedBytes: number | undefined;
-        if (blank) {
-          usedBytes = 0;
-        } else {
+        if (records) {
           try {
             usedBytes = encodeNativeRecords(records).length;
           } catch {
@@ -429,8 +433,8 @@ export const NfcService = {
           state: status.writable ? 'read_write' as const : 'read_only' as const,
           capacity: status.capacity,
           usedBytes,
-          recordCount: blank ? 0 : records.length,
-          urls: blank ? [] : extractUrls(records as never),
+          recordCount: records?.length,
+          urls: records ? extractUrls(records as never) : [],
           message: '태그 상태를 확인했습니다.',
         };
       }, signal);

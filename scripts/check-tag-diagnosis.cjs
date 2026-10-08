@@ -330,11 +330,25 @@ async function inspect(config) {
     }
   }
   assert.equal((await inspect({ status: rw(42), tag: tagOf([uri(U1)]) })).capacity, 42, 'Capacity follows the tag, never a constant');
-  // Blank tags: [] / TNF_EMPTY only = 0 records, 0 B (same blank rule as readUrl); capacity still reported.
-  for (const records of [[], [emptyRecord], [emptyRecord, emptyRecord]]) {
+  // Diagnosis counts what is really recorded: only a real no-message [] is 0 B / 0; a TNF_EMPTY record is a record.
+  assert.deepEqual([3, 6, 0], [1, 2, 0].map((n) => Ndef.encodeMessage(Array.from({ length: n }, () => Ndef.emptyRecord())).length));
+  for (const [records, bytes, count] of [[[], 0, 0], [[emptyRecord], 3, 1], [[emptyRecord, emptyRecord], 6, 2]]) {
     for (const [status, stateName] of [[rw(), 'read_write'], [ro(), 'read_only']]) {
       const r = await inspect({ status, tag: { ndefMessage: records } });
-      assert.deepEqual([r.ok, r.state, r.capacity, r.usedBytes, r.recordCount, r.urls], [true, stateName, 137, 0, 0, []]);
+      assert.deepEqual([r.ok, r.state, r.capacity, r.usedBytes, r.recordCount, r.urls], [true, stateName, 137, bytes, count, []]);
+    }
+  }
+  // The editor still starts from a URL-less blank tag on the same TNF_EMPTY tag (readUrl rule is a different question).
+  native({ status: rw(), tag: { ndefMessage: [emptyRecord] } });
+  const blankRead = await service.readUrl();
+  assert.deepEqual([blankRead.ok, blankRead.reason, blankRead.urls, blankRead.capacity], [false, 'no_url', [], 137]);
+  // Native field missing/invalid: no-message and failed-lookup look the same (Util.messageToJSON(null) -> key dropped),
+  // so usage and record count are unknown, never a guessed [] / 0.
+  for (const [name, tag] of [['field missing', {}], ['null', { ndefMessage: null }], ['number', { ndefMessage: 42 }],
+    ['string', { ndefMessage: 'x' }], ['object', { ndefMessage: {} }], ['null record', { ndefMessage: [null] }]]) {
+    for (const status of [rw(), ro()]) {
+      const r = await inspect({ status, tag });
+      assert.deepEqual([r.ok, r.capacity, r.usedBytes, r.recordCount, r.urls], [true, 137, undefined, undefined, []], name);
     }
   }
   // Message that cannot be serialized: bytes unknown (not guessed from URLs); the rest is still diagnosed.
@@ -456,11 +470,14 @@ async function inspect(config) {
   noWrites();
   assert.ok(h.text().includes('정상'));
   assert.deepEqual(h.items(), {
-    '전체 용량': '137 B', 사용량: '84 B', '남은 용량': '53 B', '기록된 레코드': '4개 (링크 2개)',
+    '전체 용량': '137 B', 사용량: '84 B', '남은 용량': '53 B', '기록된 레코드': '4개',
     'NDEF 포맷': '포맷됨', '쓰기 가능 여부': '가능',
   });
   const gauge = h.find('AppCapacityGauge');
   assert.deepEqual([gauge.used, gauge.total, gauge.linkCount], [84, 137, undefined]);
+  // The shared gauge, fed the screen's real props, shows whole-message usage / measured total / remaining with no link wording.
+  const shown = textOf(RealGauge(gauge));
+  assert.ok(shown.includes('84') && shown.includes('/ 137 B') && shown.includes('여유 53 B') && !shown.includes('링크'), shown);
   assert.deepEqual(h.labels(), ['홈으로', '다시 확인'], '③ offers only Home and a user-initiated re-check');
   assert.ok(!h.labels().some((l) => /저장|쓰기|잠금|포맷|수정|추가|OPEN|COPY|열기|복사/.test(l)));
   assert.ok(!h.has('Pressable'), 'No open/copy rows on ③');
@@ -476,16 +493,31 @@ async function inspect(config) {
   };
   // Text-only, blank, unserializable tags show exact values or "확인 불가", no URL-derived stand-ins.
   h = await open({ status: rw(), tag: tagOf([Ndef.textRecord('Hi')]) });
-  assert.deepEqual([h.items()['사용량'], h.items()['기록된 레코드'], h.items()['남은 용량']], ['9 B', '1개 (링크 0개)', '128 B']); h.dispose();
-  h = await open({ status: rw(), tag: { ndefMessage: [emptyRecord] } });
-  assert.deepEqual([h.items()['사용량'], h.items()['기록된 레코드'], h.items()['남은 용량'], h.items()['전체 용량']], ['0 B', '0개 (링크 0개)', '137 B', '137 B']); h.dispose();
+  assert.deepEqual([h.items()['사용량'], h.items()['기록된 레코드'], h.items()['남은 용량']], ['9 B', '1개', '128 B']); h.dispose();
+  // Real no-message [] = 0 B / 0개; one real TNF_EMPTY record = 3 B / 1개 — the gauge gets exactly these measured values.
+  for (const [records, used, count, remain] of [[[], 0, '0개', '137 B'], [[emptyRecord], 3, '1개', '134 B'], [[emptyRecord, emptyRecord], 6, '2개', '131 B']]) {
+    h = await open({ status: rw(), tag: { ndefMessage: records } });
+    assert.deepEqual([h.items()['사용량'], h.items()['기록된 레코드'], h.items()['남은 용량'], h.items()['전체 용량']], [`${used} B`, count, remain, '137 B']);
+    const emptyGauge = h.find('AppCapacityGauge');
+    assert.deepEqual([emptyGauge.used, emptyGauge.total, emptyGauge.linkCount], [used, 137, undefined]);
+    h.dispose();
+  }
   h = await open({ status: rw(), tag: { ndefMessage: [{ tnf: 1, type: [0xff], id: '', payload: [] }] } });
-  assert.deepEqual([h.items()['사용량'], h.items()['남은 용량'], h.items()['기록된 레코드']], ['확인 불가', '확인 불가', '1개 (링크 0개)']);
+  assert.deepEqual([h.items()['사용량'], h.items()['남은 용량'], h.items()['기록된 레코드']], ['확인 불가', '확인 불가', '1개']);
   assert.ok(!h.has('AppCapacityGauge'), 'No gauge without a measured used value'); h.dispose();
+  // Native message field missing/invalid: state and capacity are real, usage/remaining/records are 확인 불가, no gauge (no guessed denominator or []).
+  for (const tag of [{}, { ndefMessage: null }, { ndefMessage: 42 }]) {
+    h = await open({ status: rw(), tag });
+    assert.ok(h.text().includes('정상'));
+    assert.deepEqual([h.items()['전체 용량'], h.items()['사용량'], h.items()['남은 용량'], h.items()['기록된 레코드']], ['137 B', '확인 불가', '확인 불가', '확인 불가']);
+    assert.ok(!h.has('AppCapacityGauge'), 'No gauge when the used bytes are unknown'); assert.ok(!h.has('AppInfoCard'));
+    h.dispose();
+  }
   // Three states + lookup failure are distinct screens.
   h = await open({ status: ro(), tag: tagOf([uri(U1)]) });
   assert.ok(h.text().includes('이 태그는 잠겨 있습니다')); assert.equal(h.items()['쓰기 가능 여부'], '불가');
-  assert.ok(!h.text().includes('NDEF 태그가 아닙니다')); h.dispose();
+  assert.ok(!h.text().includes('NDEF 태그가 아닙니다'));
+  assert.deepEqual([h.find('AppCapacityGauge').used, h.find('AppCapacityGauge').total], [encoded([uri(U1)]), 137], 'ReadOnly also shows the gauge'); h.dispose();
   h = await open(nonNdef);
   assert.ok(h.text().includes('NDEF 태그가 아닙니다')); assert.ok(!h.text().includes('이 태그는 잠겨 있습니다'));
   assert.deepEqual(h.items(), { 'NDEF 포맷': '아님' }, 'No capacity/records are invented for a non-NDEF tag');
@@ -520,7 +552,7 @@ async function inspect(config) {
     assert.deepEqual(h.items(), {});
     cfg.tagGate = undefined; cfg.tag = tagOf([uri(U2), uri(U2)]); cfg.status = rw(504);
     await h.press('다시 확인'); await h.settle();
-    assert.deepEqual([h.items()['전체 용량'], h.items()['기록된 레코드']], ['504 B', '2개 (링크 2개)'], 'Re-check shows the new tag only');
+    assert.deepEqual([h.items()['전체 용량'], h.items()['기록된 레코드']], ['504 B', '2개'], 'Re-check shows the new tag only');
     h.dispose();
 
     // 홈으로 while waiting aborts; re-entering while cleanup is unfinished waits for it, then reads the new tag.
@@ -677,7 +709,7 @@ async function inspect(config) {
   assert.ok(gaugeText({ used: 70, total: undefined }).includes('용량 확인 불가') && !gaugeText({ used: 70, total: undefined }).includes('링크'));
   assert.ok(gaugeText({ used: 14, total: undefined, linkCount: 1 }).includes('링크 1개 · 용량 확인 불가'));
 
-  console.log('PASS: inspectTag exact whole-message bytes/recordCount/urls for multi-URL, duplicate, text-only, text-URL, MIME, mixed, AAR-like and blank ([]/TNF_EMPTY) tags; capacity from tag; unserializable -> 확인 불가');
+  console.log('PASS: inspectTag exact whole-message bytes/recordCount/urls for multi-URL, duplicate, text-only, text-URL, MIME, mixed, AAR-like tags; real [] = 0/0 but TNF_EMPTY x1 = 3 B/1, x2 = 6 B/2 (readUrl still treats it as an editable blank); missing/invalid native message -> 확인 불가 (no guessed []); capacity from tag; unserializable -> 확인 불가');
   console.log('PASS: read_write/read_only/not_ndef + lookup failure; Android NotSupported/0 fallback stays status_unknown; requestTechnology===null is never ready: only techTypes without Ndef proves 미지원, Ndef present (connect failed, cached status still answering) = status_unknown for inspect/read/write with no write/lock');
   console.log('PASS: Home third button navigates only; ③ self-read once, 3 states/failure/values on screen, only 홈으로/다시 확인, no auto retry, blur/홈으로 cancel + late result dropped + re-entry after cleanup');
   console.log('PASS: ①/② anomaly -> ③ ([홈, ③], after cleanup, leave cancels jump, no clear, no write), ② write failure -> ③, ① leaving cancels its native request; shared gauge wording');

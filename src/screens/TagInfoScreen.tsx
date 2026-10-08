@@ -151,7 +151,7 @@ export function TagInfoScreen({ navigation }: Props) {
                   <InfoItem label="남은 용량" value={bytes(remaining)} />
                   <InfoItem
                     label="기록된 레코드"
-                    value={ok.recordCount === undefined ? '확인 불가' : `${ok.recordCount}개 (링크 ${ok.urls.length}개)`}
+                    value={ok.recordCount === undefined ? '확인 불가' : `${ok.recordCount}개`}
                   />
                 </View>
                 <View style={{ height: AppSpacing.lg }} />

@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const ts = require('typescript');
 const { StackRouter, StackActions } = require('@react-navigation/routers');
+const hardwareBack = require('./hardware-back-harness.cjs');
 const root = path.resolve(__dirname, '..');
 let currentHost;
 const sameDeps = (a, b) => a && b && a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
@@ -143,6 +144,10 @@ class Harness {
     this.options = { routeNames: ['Home', 'LinkEdit', 'TagRead', 'LinkTypeSelect', 'InstagramInput', 'CustomUrlInput', 'WriteComplete', 'TagInfo'],
       routeParamList: {}, routeGetIdList: {} };
     this.stack = this.router.getInitialState(this.options);
+    this.hardwareBack = hardwareBack({
+      canGoBack: () => this.router.getStateForAction(this.stack, { type: 'GO_BACK' }, this.options) !== null,
+      goBack: () => this.dispatch({ type: 'GO_BACK' }),
+    });
     this.provider = new HookHost(this, state.LinkWriterProvider, { children: null });
     this.sync();
     this.flush();
@@ -212,8 +217,8 @@ class Harness {
     return result;
   }
   enterEdit() { this.find('AppActionCard', (p) => p.title === '링크 편집').onPress(); this.flush(); }
-  back() { this.dispatch({ type: 'GO_BACK' }); }
-  dispose() { for (const host of [this.provider, ...this.hosts.values()]) host.dispose(); }
+  back() { assert.equal(this.hardwareBack.press(), true, 'Hardware back is consumed on a child screen'); }
+  dispose() { this.hardwareBack.dispose(); for (const host of [this.provider, ...this.hosts.values()]) host.dispose(); }
 }
 
 const urls = [
@@ -230,6 +235,41 @@ const boundaryUrl = `https://example.com/${'a'.repeat(123)}`;
 const invalidCapacities = [undefined, null, 0, -1, NaN, Infinity, 1.5, '144', Number.MAX_SAFE_INTEGER + 1];
 
 (async () => {
+  const rootBack = new Harness();
+  assert.equal(rootBack.hardwareBack.press(), false, 'Home delegates back to Android');
+  assert.equal(rootBack.hardwareBack.defaults, 1);
+  assert.equal(rootBack.route.name, 'Home');
+  rootBack.dispose();
+  assert.equal(rootBack.hardwareBack.press(), false, 'Unmount removes the navigation back subscription');
+  console.log('PASS: installed RN BackHandler + React Navigation back hook: Home default fallback and subscription cleanup');
+  for (const screen of ['LinkEdit', 'TagRead', 'LinkTypeSelect', 'InstagramInput', 'CustomUrlInput']) {
+    const destinations = [];
+    for (const method of ['header', 'hardware']) {
+      readResult = success();
+      const harness = new Harness(); harness.enterEdit(); await harness.settle();
+      const retained = harness.context.links;
+      if (screen !== 'LinkEdit') harness.dispatch({ type: 'NAVIGATE', payload: { name: screen, params: { editIndex: 0 } } });
+      if (screen.endsWith('Input')) { harness.find('AppTextField').onChangeText('unsaved draft'); harness.flush(); }
+      // NativeStackView's header callback dispatches POP with the current route and stack keys.
+      if (method === 'header') harness.dispatch({ ...StackActions.pop(), source: harness.route.key, target: harness.stack.key });
+      else harness.back();
+      destinations.push(harness.stack.routes.map((route) => route.name));
+      assert.strictEqual(harness.context.links, retained, `${screen}/${method}: retained edits and row identities`);
+      assert.equal(harness.context.capacity, 512);
+      assert.equal(reads, 1, `${screen}/${method}: no tag reread on return`);
+      harness.dispose();
+    }
+    assert.deepEqual(destinations[0], destinations[1], `${screen}: header and hardware reach the same previous screen`);
+  }
+  readResult = success();
+  const completed = new Harness(); completed.enterEdit(); await completed.settle();
+  const savedLinks = completed.context.links, editorKey = completed.route.key;
+  completed.dispatch({ type: 'NAVIGATE', payload: { name: 'WriteComplete', params: { urls, usedBytes: encodedBytes(urls) } } });
+  completed.back();
+  assert.equal(completed.route.key, editorKey, 'Hidden header arrow does not disable the existing system-back POP');
+  assert.strictEqual(completed.context.links, savedLinks);
+  assert.equal(reads, 1, 'WriteComplete back retains the editor without rereading'); completed.dispose();
+  console.log('PASS: header POP/hardware GO_BACK equivalence; input drafts leave retained edits intact; WriteComplete existing system-back policy');
   // 4-1/4-2: execute actual utilities, gauge, screens, provider and save handlers.
   assert.equal(encodedBytes([boundaryUrl]), 140, 'Same valid URL lies between 137 B and 144 B');
   for (const list of [[], [boundaryUrl], ['HTTPS://example.com/Mixed'], ['https://example.com/홍길동'],

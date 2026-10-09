@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const ts = require('typescript');
 const { StackRouter } = require('@react-navigation/routers');
+const hardwareBack = require('./hardware-back-harness.cjs');
 const Ndef = require('react-native-nfc-manager/ndef-lib');
 const root = path.resolve(__dirname, '..');
 
@@ -201,6 +202,10 @@ class Harness {
     this.options = { routeNames: ['Home', 'LinkEdit', 'TagRead', 'LinkTypeSelect', 'InstagramInput', 'CustomUrlInput', 'WriteComplete', 'TagInfo'],
       routeParamList: {}, routeGetIdList: {} };
     this.stack = this.router.getInitialState(this.options);
+    this.hardwareBack = hardwareBack({
+      canGoBack: () => this.router.getStateForAction(this.stack, { type: 'GO_BACK' }, this.options) !== null,
+      goBack: () => this.dispatch({ type: 'GO_BACK' }),
+    });
     this.provider = new HookHost(this, state.LinkWriterProvider, { children: null });
     this.sync(); this.flush();
   }
@@ -271,8 +276,8 @@ class Harness {
     return result;
   }
   card(title) { return this.find('AppActionCard', (p) => p.title === title); }
-  back() { this.dispatch({ type: 'GO_BACK' }); }
-  dispose() { for (const host of [this.provider, ...this.hosts.values()]) host.dispose(); }
+  back() { assert.equal(this.hardwareBack.press(), true, 'Hardware back is consumed on a child screen'); }
+  dispose() { this.hardwareBack.dispose(); for (const host of [this.provider, ...this.hosts.values()]) host.dispose(); }
 }
 
 // ---------- fixtures ----------
@@ -555,19 +560,24 @@ async function inspect(config) {
     assert.deepEqual([h.items()['전체 용량'], h.items()['기록된 레코드']], ['504 B', '2개'], 'Re-check shows the new tag only');
     h.dispose();
 
-    // 홈으로 while waiting aborts; re-entering while cleanup is unfinished waits for it, then reads the new tag.
-    native({ status: rw(42), tag: tagOf([uri(U1)]), tagGate: deferred(), cleanupGate: deferred() });
-    const staleGate = cfg.tagGate, cleanup = cfg.cleanupGate;
-    h = new Harness(); h.card('태그 상태 확인').onPress(); h.flush(); await h.settle();
-    h.press('홈으로'); assert.deepEqual(h.names, ['Home']);
-    assert.equal(events.filter((e) => e === 'cancel').length, 1);
-    Object.assign(cfg, { status: rw(504), tag: tagOf([uri(U2)]), tagGate: undefined });
-    h.card('태그 상태 확인').onPress(); h.flush(); await h.settle();
-    assert.equal(events.filter((e) => e === 'request').length, 1, 'Re-entry waits for the previous session cleanup');
-    cleanup.resolve(); cfg.cleanupGate = undefined; staleGate.resolve(); await h.settle();
-    assert.equal(events.filter((e) => e === 'request').length, 2);
-    assert.deepEqual([h.items()['전체 용량'], h.items()['사용량']], ['504 B', `${encoded([uri(U2)])} B`], 'Only the re-entered read is shown');
-    noWrites(); h.dispose();
+    // All existing exits abort; re-entry waits for cleanup, then ignores the old result.
+    for (const departure of ['home', 'header', 'hardware']) {
+      native({ status: rw(42), tag: tagOf([uri(U1)]), tagGate: deferred(), cleanupGate: deferred() });
+      const staleGate = cfg.tagGate, cleanup = cfg.cleanupGate;
+      h = new Harness(); h.card('태그 상태 확인').onPress(); h.flush(); await h.settle();
+      if (departure === 'home') h.press('홈으로');
+      else if (departure === 'header') h.dispatch({ type: 'POP', payload: { count: 1 }, source: h.route.key, target: h.stack.key });
+      else h.back();
+      assert.deepEqual(h.names, ['Home'], `${departure}: leaves a pending diagnosis`);
+      assert.equal(events.filter((e) => e === 'cancel').length, 1);
+      Object.assign(cfg, { status: rw(504), tag: tagOf([uri(U2)]), tagGate: undefined });
+      h.card('태그 상태 확인').onPress(); h.flush(); await h.settle();
+      assert.equal(events.filter((e) => e === 'request').length, 1, 'Re-entry waits for the previous session cleanup');
+      cleanup.resolve(); cfg.cleanupGate = undefined; staleGate.resolve(); await h.settle();
+      assert.equal(events.filter((e) => e === 'request').length, 2);
+      assert.deepEqual([h.items()['전체 용량'], h.items()['사용량']], ['504 B', `${encoded([uri(U2)])} B`], 'Only the re-entered read is shown');
+      noWrites(); h.dispose();
+    }
   }
 
   // ===== 5-4 ① TagRead: anomaly guidance → ③ =====
@@ -711,6 +721,6 @@ async function inspect(config) {
 
   console.log('PASS: inspectTag exact whole-message bytes/recordCount/urls for multi-URL, duplicate, text-only, text-URL, MIME, mixed, AAR-like tags; real [] = 0/0 but TNF_EMPTY x1 = 3 B/1, x2 = 6 B/2 (readUrl still treats it as an editable blank); missing/invalid native message -> 확인 불가 (no guessed []); capacity from tag; unserializable -> 확인 불가');
   console.log('PASS: read_write/read_only/not_ndef + lookup failure; Android NotSupported/0 fallback stays status_unknown; requestTechnology===null is never ready: only techTypes without Ndef proves 미지원, Ndef present (connect failed, cached status still answering) = status_unknown for inspect/read/write with no write/lock');
-  console.log('PASS: Home third button navigates only; ③ self-read once, 3 states/failure/values on screen, only 홈으로/다시 확인, no auto retry, blur/홈으로 cancel + late result dropped + re-entry after cleanup');
+  console.log('PASS: Home third button navigates only; ③ self-read once, 3 states/failure/values on screen, only 홈으로/다시 확인, no auto retry, blur/홈으로/header/hardware cancel + late result dropped + re-entry after cleanup');
   console.log('PASS: ①/② anomaly -> ③ ([홈, ③], after cleanup, leave cancels jump, no clear, no write), ② write failure -> ③, ① leaving cancels its native request; shared gauge wording');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

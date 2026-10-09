@@ -15,11 +15,14 @@ export interface LinkType {
   placeholder: string;
   description: string;
   iconName: string;
+  /** 공식 패키지가 확인된 Android 앱만 지원. 기본값은 항상 꺼짐. */
+  androidPackage?: string;
 }
 
 export const LINK_TYPES: LinkType[] = [
   {
     id: 'instagram',
+    androidPackage: 'com.instagram.android',
     label: 'Instagram',
     inputMode: 'username',
     urlPattern: 'https://www.instagram.com/{handle}/',
@@ -30,6 +33,7 @@ export const LINK_TYPES: LinkType[] = [
   },
   {
     id: 'x',
+    androidPackage: 'com.twitter.android',
     label: 'X',
     inputMode: 'username',
     urlPattern: 'https://x.com/{handle}',
@@ -40,6 +44,7 @@ export const LINK_TYPES: LinkType[] = [
   },
   {
     id: 'youtube',
+    androidPackage: 'com.google.android.youtube',
     label: 'YouTube',
     inputMode: 'username',
     urlPattern: 'https://youtube.com/@{handle}',
@@ -51,6 +56,7 @@ export const LINK_TYPES: LinkType[] = [
   },
   {
     id: 'tiktok',
+    androidPackage: 'com.zhiliaoapp.musically',
     label: 'TikTok',
     inputMode: 'username',
     urlPattern: 'https://www.tiktok.com/@{handle}',
@@ -61,6 +67,7 @@ export const LINK_TYPES: LinkType[] = [
   },
   {
     id: 'linkedin',
+    androidPackage: 'com.linkedin.android',
     label: 'LinkedIn',
     inputMode: 'username',
     urlPattern: 'https://linkedin.com/in/{handle}',
@@ -71,6 +78,7 @@ export const LINK_TYPES: LinkType[] = [
   },
   {
     id: 'github',
+    androidPackage: 'com.github.android',
     label: 'GitHub',
     inputMode: 'username',
     urlPattern: 'https://github.com/{handle}',

@@ -22,6 +22,8 @@ function load(file, imports, extra = '') {
 }
 
 const normalizer = load('src/utils/urlNormalizer.ts', {});
+const model = load('src/models/linkType.ts', {});
+const aar = load('src/nfc/aar.ts', { 'react-native-nfc-manager': { Ndef }, '../models/linkType': model });
 // Execute the installed Android handler itself: native errors become NotSupported/0.
 const { NdefHandler } = load('node_modules/react-native-nfc-manager/src/NfcTech/NdefHandler.js', {
   'react-native': { Platform },
@@ -86,13 +88,13 @@ const manager = {
 const { NfcService, encodeNativeRecords } = load('src/nfc/nfcService.ts', {
   'react-native': { Platform },
   'react-native-nfc-manager': { default: manager, Ndef, NdefStatus, NfcTech: { Ndef: 'Ndef' } },
-  '../utils/urlNormalizer': normalizer,
+  '../utils/urlNormalizer': normalizer, './aar': aar,
 }, '\nexport { encodeNativeRecords };');
 
-async function run(settings = {}, read = false, urls = ['https://example.com']) {
+async function run(settings = {}, read = false, urls = ['https://example.com'], writeOptions = {}) {
   options = settings;
   events = [];
-  const result = await (read ? NfcService.readUrl() : NfcService.writeUrls(urls));
+  const result = await (read ? NfcService.readUrl() : NfcService.writeUrls(urls, writeOptions));
   assert.equal(events.at(-1), 'cancel', 'Every attempted session must close');
   assert.equal(events.filter((event) => event === 'request').length, 1, 'No automatic retry');
   assert.equal(events.filter((event) => event === 'cancel').length, 1);
@@ -101,6 +103,69 @@ async function run(settings = {}, read = false, urls = ['https://example.com']) 
 
 (async () => {
   assert.deepEqual(await androidHandler.getNdefStatus(), { status: 1, capacity: 0 });
+  // AAR tests run the actual service through native byte-array types/hex ids and the installed codec.
+  const aarUrls = ['https://www.instagram.com/Mixed_Name/', 'https://example.com/A%2fb?flag#Keep', 'https://www.instagram.com/Mixed_Name/'];
+  const packages = [
+    ['instagram', 'com.instagram.android', 39], ['github', 'com.github.android', 36],
+    ['linkedin', 'com.linkedin.android', 38], ['x', 'com.twitter.android', 37],
+    ['tiktok', 'com.zhiliaoapp.musically', 42], ['youtube', 'com.google.android.youtube', 44],
+  ];
+  assert.equal(model.LINK_TYPES.filter((type) => type.androidPackage).length, 6);
+  for (const [id, packageName, expectedBytes] of packages) {
+    assert.equal(model.findLinkTypeById(id).androidPackage, packageName);
+    const result = await run({}, false, aarUrls, { androidPackage: packageName });
+    assert.equal(result.ok, true); assert.equal(result.androidPackage, packageName);
+    const decoded = Ndef.decodeMessage(written);
+    assert.equal(decoded.length, aarUrls.length + 1);
+    assert.deepEqual(decoded.slice(0, -1).map((r) => Ndef.uri.decodePayload(r.payload)), aarUrls);
+    assert.equal(decoded.at(-1).tnf, 4); assert.equal(decoded.at(-1).type, 'android.com:pkg');
+    assert.equal(Buffer.from(decoded.at(-1).payload).toString('utf8'), packageName);
+    const linkOnly = Ndef.encodeMessage(aarUrls.map((url) => Ndef.uriRecord(url)));
+    assert.equal(result.usedBytes - linkOnly.length, expectedBytes);
+    // Independent short-record size: three header bytes, actual ASCII type and package lengths.
+    assert.equal(expectedBytes, 3 + Buffer.byteLength('android.com:pkg') + Buffer.byteLength(packageName));
+    assert.equal(result.usedBytes, written.length);
+    const loaded = await run({ records: toNative(decoded) }, true);
+    assert.deepEqual(loaded.aarRecords, [{ packageName }]); assert.equal(loaded.usedBytes, result.usedBytes);
+    assert.equal((await run({ status: { status: 2, capacity: result.usedBytes - 1 } }, false, aarUrls,
+      { androidPackage: packageName })).reason, 'capacity');
+    assert.equal(events.includes('write'), false);
+    assert.equal((await run({ status: { status: 2, capacity: result.usedBytes } }, false, aarUrls,
+      { androidPackage: packageName })).ok, true);
+  }
+  const aarOptions = { androidPackage: 'com.instagram.android' };
+  for (const transform of [
+    (r) => r.slice(0, -1), // URL-only verification must never call this success.
+    (r) => [...r, r.at(-1)],
+    (r) => [r.at(-1), ...r.slice(0, -1)],
+    (r) => [...r.slice(0, -1), { ...r.at(-1), tnf: 2 }],
+    (r) => [...r.slice(0, -1), { ...r.at(-1), type: Ndef.util.stringToBytes('android.com:bad') }],
+    (r) => [...r.slice(0, -1), { ...r.at(-1), payload: Ndef.util.stringToBytes('com.github.android') }],
+    (r) => [...r.slice(0, -1), { ...r.at(-1), payload: [255] }],
+    (r) => [...r.slice(0, -1), { ...r.at(-1), id: '00' }],
+    (r) => [...r.slice(0, -1), { ...r.at(-1), payload: [...r.at(-1).payload, NaN] }],
+  ]) {
+    assert.equal((await run({ transform }, false, aarUrls, aarOptions)).reason, 'verify_mismatch');
+  }
+  assert.equal((await run({ transform: (r) => [...r, ...toNative([Ndef.androidApplicationRecord('com.instagram.android')])] },
+    false, aarUrls)).reason, 'verify_mismatch', 'Unexpected AAR when off must fail verification');
+  assert.equal((await run({}, false, aarUrls)).ok, true);
+  assert.equal(Ndef.decodeMessage(written).length, aarUrls.length, 'Off is a whole rewrite with no AAR');
+  assert.equal((await run({}, false, aarUrls, { androidPackage: 'arbitrary.pkg' })).ok, false);
+  assert.equal(events.includes('write'), false, 'Arbitrary package rejected before native write');
+  const unknownRecord = Ndef.androidApplicationRecord('org.example.unknown');
+  const unknown = await run({ records: toNative([Ndef.uriRecord(aarUrls[0]), unknownRecord]) }, true);
+  assert.deepEqual(unknown.aarRecords, [{ packageName: 'org.example.unknown' }]);
+  assert.equal(aar.aarLabel(unknown.aarRecords[0]), 'org.example.unknown');
+  const brokenRead = await run({ records: [toNative([Ndef.uriRecord(aarUrls[0])])[0],
+    { ...toNative([unknownRecord])[0], id: 'zz' }] }, true);
+  assert.equal(brokenRead.ok, true); assert.equal(brokenRead.usedBytes, undefined);
+  assert.deepEqual(brokenRead.urls, [aarUrls[0]], 'Unserializable AAR keeps URL opening/copy data');
+  const malformedAar = await run({ records: [toNative([Ndef.uriRecord(aarUrls[0])])[0],
+    { ...toNative([unknownRecord])[0], payload: [255] }] }, true);
+  assert.deepEqual(malformedAar.aarRecords, [{}]); assert.equal(aar.aarLabel(malformedAar.aarRecords[0]), '패키지 확인 불가');
+  console.log('PASS: AAR native on/off, URI order/raw duplicates, max one last, six actual byte sizes 39/36/38/37/42/44, exact capacity boundaries, wrong native type/package/position/count/id/payload rejected, unknown package visible, unusable native message has unknown bytes');
+
   const records = [Ndef.uriRecord('https://example.com', [0, 255, 16]), Ndef.uriRecord('https://example.com')];
   assert.deepEqual(encodeNativeRecords(toNative(records)), Ndef.encodeMessage(records));
   assert.deepEqual(encodeNativeRecords(records.map((r) => ({ ...r, type: Ndef.util.stringToBytes(r.type) }))),
@@ -238,6 +303,24 @@ async function run(settings = {}, read = false, urls = ['https://example.com']) 
     if (laterEvent) assert.equal(events.includes(laterEvent), false, `${gateName}: no native ${laterEvent} after abort`);
     assert.equal(events.filter((e) => e === 'cancel').length, 1, 'Abort and finally share cleanup');
   }
+  // Options and URL snapshots are captured together before waiting for tag acquisition.
+  options = { requestGate: deferred() }; events = [];
+  const mutableUrls = ['https://www.instagram.com/snapshot/', 'https://example.com/한글'];
+  const mutableOptions = { androidPackage: 'com.instagram.android' };
+  const snapWrite = NfcService.writeUrls(mutableUrls, mutableOptions);
+  await settle();
+  mutableUrls.reverse(); mutableOptions.androidPackage = 'com.github.android';
+  options.requestGate.resolve();
+  const snapResult = await snapWrite;
+  assert.equal(snapResult.ok, true); assert.equal(snapResult.androidPackage, 'com.instagram.android');
+  assert.deepEqual(written, Ndef.encodeMessage([Ndef.uriRecord('https://www.instagram.com/snapshot/'),
+    Ndef.uriRecord('https://example.com/한글'), Ndef.androidApplicationRecord('com.instagram.android')]));
+  manager.setAlertMessage = async () => {};
+  Platform.OS = 'ios';
+  const iosResult = await run({}, false, ['https://example.com'], { androidPackage: 'com.instagram.android' });
+  assert.equal(iosResult.ok, true); assert.equal(iosResult.androidPackage, undefined);
+  assert.equal(Ndef.decodeMessage(written).length, 1, 'iOS retains its existing URL-only write');
+  Platform.OS = 'android';
   options = { supportError: true }; events = [];
   assert.equal((await NfcService.writeUrls(original)).reason, 'failed', 'Readiness rejection returns a failure result');
   console.log('PASS: write snapshot/real UTF-8 byte length, native-gated waiting/write/verify stages, cancellation at request/status/write/fresh boundaries, one cleanup/no later write/no false success');

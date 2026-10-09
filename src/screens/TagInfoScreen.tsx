@@ -13,6 +13,7 @@ import { AppInfoCard } from '@/components/AppCards';
 import { AppCapacityGauge } from '@/components/AppCapacityGauge';
 import { AppRingBadge } from '@/components/AppRingBadge';
 import { NfcService, type NfcInspectResult, type NfcTagState } from '@/nfc/nfcService';
+import { aarLabel } from '@/nfc/aar';
 import { AppColors, AppOpacity, AppSpacing, AppText } from '@/theme/tokens';
 import type { RootStackParamList } from '@/navigation';
 
@@ -159,6 +160,7 @@ export function TagInfoScreen({ navigation }: Props) {
                   <InfoItem label="NDEF 포맷" value="포맷됨" />
                   <InfoItem label="쓰기 가능 여부" value={ok.state === 'read_write' ? '가능' : '불가'} />
                 </View>
+                {ok.aarRecords?.map((record, index) => <InfoItem key={index} label="앱 바로 열기" value={`켜짐 · ${aarLabel(record)}`} />)}
               </>
             )}
           </>

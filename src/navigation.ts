@@ -14,5 +14,5 @@ export type RootStackParamList = {
   TagRead: undefined;
   // HANDOFF.md §4.10 — 진단 전용. 파라미터 없이 독립 진입해 스스로 태그를 한 번 읽는다.
   TagInfo: undefined;
-  WriteComplete: { urls: string[]; usedBytes: number };
+  WriteComplete: { urls: string[]; usedBytes: number; androidPackage?: string };
 };

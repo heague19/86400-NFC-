@@ -1,11 +1,12 @@
 // 홈 화면 — Flutter home_screen.dart 이식본
 
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Image, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppActionCard } from '@/components/AppCards';
+import { useLinkWriter } from '@/state/LinkWriterContext';
 import { APP_ICONS, APP_LOGO } from '@/theme/icons';
 import { AppColors, AppOpacity, AppSpacing, AppText } from '@/theme/tokens';
 import type { RootStackParamList } from '@/navigation';
@@ -13,6 +14,11 @@ import type { RootStackParamList } from '@/navigation';
 type Props = NativeStackScreenProps<RootStackParamList, 'Home'>;
 
 export function HomeScreen({ navigation }: Props) {
+  const { disableAar } = useLinkWriter();
+  useEffect(() => {
+    if (navigation.isFocused()) disableAar();
+    return navigation.addListener('focus', disableAar);
+  }, [navigation, disableAar]);
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <ScrollView contentContainerStyle={styles.content}>

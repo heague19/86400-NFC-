@@ -141,24 +141,25 @@ const manager = {
   },
 };
 const normalizer = load('src/utils/urlNormalizer.ts', {});
-const size = load('src/utils/ndefSize.ts', { 'react-native-nfc-manager': { Ndef } });
+const model = load('src/models/linkType.ts', {});
+const aarModule = load('src/nfc/aar.ts', { 'react-native-nfc-manager': { Ndef }, '../models/linkType': model });
+const size = load('src/utils/ndefSize.ts', { 'react-native-nfc-manager': { Ndef }, '../nfc/aar': aarModule });
 const { NfcService: service } = load('src/nfc/nfcService.ts', {
   'react-native': { Platform },
   'react-native-nfc-manager': { __esModule: true, default: manager, Ndef, NdefStatus, NfcTech: { Ndef: 'Ndef' } },
-  '../utils/urlNormalizer': normalizer,
+  '../utils/urlNormalizer': normalizer, './aar': aarModule,
 });
 
 // ---------- screens ----------
-const model = load('src/models/linkType.ts', {});
 const state = load('src/state/LinkWriterContext.tsx', {
-  react: React, '@/models/linkType': model, '@/utils/ndefSize': size, '@/utils/urlNormalizer': normalizer,
+  react: React, 'react-native': { Platform }, '@/models/linkType': model, '@/utils/ndefSize': size, '@/utils/urlNormalizer': normalizer,
 });
 const warnings = load('src/utils/linkWarnings.ts', { '@/utils/urlNormalizer': normalizer });
 const tokens = load('src/theme/tokens.ts', {});
 const placeholders = (...names) => Object.fromEntries(names.map((name) => [name, name]));
 const imports = {
   react: React,
-  'react-native': { ...placeholders('Image', 'ScrollView', 'Text', 'View', 'Pressable', 'KeyboardAvoidingView', 'Switch'),
+  'react-native': { ...placeholders('Image', 'ScrollView', 'Text', 'View', 'Pressable', 'KeyboardAvoidingView', 'Switch', 'Modal'),
     StyleSheet: { create: (v) => v }, Alert: { alert: () => {} }, Linking: {}, Platform },
   'react-native-safe-area-context': { SafeAreaView: 'SafeAreaView' },
   'expo-clipboard': {},
@@ -174,6 +175,7 @@ const imports = {
   '@/utils/urlNormalizer': normalizer,
   '@/utils/linkWarnings': warnings,
   '@/nfc/nfcService': { NfcService: service },
+  '@/nfc/aar': aarModule,
   '@/theme/icons': { APP_ICONS: { nfc: 'nfc', edit: 'edit', shield: 'shield' }, APP_LOGO: {}, linkTypeIcon: () => 1 },
   '@/theme/tokens': tokens,
 };
@@ -189,6 +191,7 @@ const RealGauge = load('src/components/AppCapacityGauge.tsx', imports).AppCapaci
 function nodes(tree) {
   if (!tree || typeof tree !== 'object') return [];
   if (Array.isArray(tree)) return tree.flatMap(nodes);
+  if (tree.type === 'Modal' && !tree.props.visible) return [];
   if (tree.type === 'DraggableLinkList') return [tree, ...nodes(tree.props.header), ...tree.props.links.flatMap((l, i) => nodes(tree.props.renderRow(l, i))), ...nodes(tree.props.footer)];
   if (typeof tree.type === 'function' && tree.type.name.endsWith('Screen')) return [tree, ...nodes(tree.type(tree.props))];
   return [tree, ...nodes(tree.props?.children)];
@@ -217,7 +220,8 @@ class Harness {
     return {
       isFocused: () => this.route.key === key,
       addListener: (event, fn) => {
-        assert.equal(event, 'blur');
+        assert.ok(['blur', 'focus'].includes(event));
+        if (event === 'focus') return () => {};
         if (!this.listeners.has(key)) this.listeners.set(key, new Set());
         this.listeners.get(key).add(fn);
         return () => this.listeners.get(key).delete(fn);
@@ -496,6 +500,46 @@ async function inspect(config) {
     harness.card('태그 상태 확인').onPress(); harness.flush(); await harness.settle();
     return harness;
   };
+  // 6-5: the native AAR (not the first URI's service) determines ①/③ status.
+  for (const [packageName, label] of [
+    ['com.instagram.android', 'Instagram'], ['com.github.android', 'GitHub'],
+    ['com.linkedin.android', 'LinkedIn'], ['com.twitter.android', 'X'],
+    ['com.zhiliaoapp.musically', 'TikTok'], ['com.google.android.youtube', 'YouTube'],
+    ['org.example.unknown', 'org.example.unknown'],
+  ]) {
+    const records = [uri(U1), Ndef.androidApplicationRecord(packageName)];
+    h = await open({ status: rw(504), tag: tagOf(records) });
+    assert.equal(h.items()['앱 바로 열기'], `켜짐 · ${label}`);
+    assert.equal(h.items()['사용량'], `${encoded(records)} B`);
+    assert.equal(h.items()['기록된 레코드'], '2개'); noWrites(); h.dispose();
+    native({ status: rw(504), tag: tagOf(records) }); h = new Harness();
+    h.card('링크 보기').onPress(); h.flush(); await h.press('태그 읽기'); await h.settle();
+    assert.ok(h.text().includes(`앱 바로 열기 · 켜짐 · ${label}`));
+    assert.equal(h.find('AppCapacityGauge').used, encoded(records));
+    assert.equal(h.find('AppCapacityGauge').total, 504);
+    h.press('수정하기'); await h.settle();
+    assert.equal(h.context.aarEnabled, false, 'Read native AAR is display-only until new consent'); h.dispose();
+  }
+  h = await open({ status: rw(), tag: tagOf([uri(U1)]) });
+  assert.equal(h.items()['앱 바로 열기'], undefined, 'No status row without AAR'); h.dispose();
+  h = await open({ status: rw(), tag: tagOf([Ndef.androidApplicationRecord('org.example.unknown')]) });
+  assert.equal(h.items()['앱 바로 열기'], '켜짐 · org.example.unknown', 'URL-less AAR remains diagnosable');
+  assert.equal(h.items()['기록된 레코드'], '1개'); noWrites(); h.dispose();
+  const badIdTag = tagOf([uri(U1), aar]); badIdTag.ndefMessage[1].id = 'bad-hex';
+  const badPayloadTag = tagOf([uri(U1), aar]); badPayloadTag.ndefMessage[1].payload = [NaN];
+  for (const [tag, expectedLabel] of [[badIdTag, 'Instagram'], [badPayloadTag, '패키지 확인 불가']]) {
+    h = await open({ status: rw(), tag });
+    assert.equal(h.items()['사용량'], '확인 불가'); assert.equal(h.items()['남은 용량'], '확인 불가');
+    assert.equal(h.items()['기록된 레코드'], '2개'); assert.equal(h.items()['앱 바로 열기'], `켜짐 · ${expectedLabel}`);
+    assert.equal(h.has('AppCapacityGauge'), false); h.dispose();
+    native({ status: rw(), tag }); h = new Harness(); h.card('링크 보기').onPress(); h.flush();
+    await h.press('태그 읽기'); await h.settle();
+    assert.equal(h.has('AppCapacityGauge'), false, 'Unreadable native whole-message never falls back to URL bytes');
+    assert.ok(h.text().includes('사용량 확인 불가')); assert.ok(h.text().includes(U1));
+    assert.ok(h.text().includes(expectedLabel));
+    assert.ok(h.has('Pressable', (p) => p.onPress && p.onLongPress), 'Original URL open/copy remains available'); h.dispose();
+  }
+  console.log('PASS: native AAR ①/③ six services + unknown + malformed payload, absence hidden, exact whole bytes/count, URL-less AAR diagnosis, unserializable AAR reports unknown usage with URL open/copy preserved');
   // Text-only, blank, unserializable tags show exact values or "확인 불가", no URL-derived stand-ins.
   h = await open({ status: rw(), tag: tagOf([Ndef.textRecord('Hi')]) });
   assert.deepEqual([h.items()['사용량'], h.items()['기록된 레코드'], h.items()['남은 용량']], ['9 B', '1개', '128 B']); h.dispose();

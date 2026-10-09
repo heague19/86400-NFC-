@@ -6,6 +6,7 @@ import { Image, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppPrimaryButton, AppSecondaryButton } from '@/components/AppButton';
+import { aarLabel } from '@/nfc/aar';
 import { APP_ICONS } from '@/theme/icons';
 import { AppColors, AppOpacity, AppRadius, AppSpacing, AppText } from '@/theme/tokens';
 import type { RootStackParamList } from '@/navigation';
@@ -13,7 +14,7 @@ import type { RootStackParamList } from '@/navigation';
 type Props = NativeStackScreenProps<RootStackParamList, 'WriteComplete'>;
 
 export function WriteCompleteScreen({ route, navigation }: Props) {
-  const { urls, usedBytes } = route.params;
+  const { urls, usedBytes, androidPackage } = route.params;
   const primaryUrl = urls[0];
   const onDone = () => {
     if (!navigation.isFocused()) return;
@@ -39,6 +40,9 @@ export function WriteCompleteScreen({ route, navigation }: Props) {
         <Text style={[AppText.bodyMedium, styles.centerSub]}>
           링크 {urls.length}개 저장 · 최종 사용량 {usedBytes} B
         </Text>
+        {androidPackage ? <Text style={[AppText.bodyMedium, styles.centerSub]}>
+          안드로이드에서 {aarLabel({ packageName: androidPackage })} 앱으로 바로 열립니다
+        </Text> : null}
 
         <View style={{ height: AppSpacing.xxl }} />
         <Text style={styles.urlLabel}>대표 링크</Text>

@@ -16,6 +16,7 @@ import { AppCapacityGauge } from '@/components/AppCapacityGauge';
 import { AppRingBadge } from '@/components/AppRingBadge';
 import { detectLinkTypeFromUrl } from '@/models/linkType';
 import { NfcService } from '@/nfc/nfcService';
+import { aarLabel, type AarRecord } from '@/nfc/aar';
 import { NdefSize } from '@/utils/ndefSize';
 import { hostOf } from '@/utils/urlNormalizer';
 import { linkTypeIcon } from '@/theme/icons';
@@ -32,6 +33,8 @@ interface ReadTag {
   urls: string[];
   capacity?: number;
   writable?: boolean;
+  aarRecords?: AarRecord[];
+  usedBytes?: number;
 }
 
 export function TagReadScreen({ navigation }: Props) {
@@ -100,6 +103,8 @@ export function TagReadScreen({ navigation }: Props) {
           urls: result.urls ?? [result.url],
           capacity: result.capacity,
           writable: result.writable,
+          aarRecords: result.aarRecords,
+          usedBytes: result.usedBytes,
         });
       } else {
         setErrorMsg(result.message);
@@ -167,8 +172,8 @@ export function TagReadScreen({ navigation }: Props) {
   // 읽은 URL의 도메인으로 어디 링크인지 추론 (쓰기 때와 같은 아이콘을 보여주기 위해)
   const linkType = tag ? detectLinkTypeFromUrl(tag.url) : undefined;
 
-  // 게이지는 태그에 실제로 들어 있는 전체 링크를 합산한다
-  const bytes = tag ? NdefSize.estimateMessageBytes(tag.urls) : 0;
+  // AAR을 포함한 native 전체 메시지의 사용량만 표시한다.
+  const bytes = tag?.usedBytes;
   const total = tag?.capacity;
 
   return (
@@ -189,7 +194,11 @@ export function TagReadScreen({ navigation }: Props) {
         {tag ? (
           <>
             {/* 용량은 태그가 보고한 실측값. 추정하지 않는다 */}
-            <AppCapacityGauge used={bytes} total={total} linkCount={tag.urls.length} />
+            {bytes !== undefined ? <AppCapacityGauge used={bytes} total={total} linkCount={tag.urls.length} />
+              : <Text style={AppText.bodyMedium}>사용량 확인 불가 · 전체 용량 {total === undefined ? '확인 불가' : `${total} B`}</Text>}
+            {tag.aarRecords?.map((record, index) => <Text key={index} style={AppText.bodyMedium}>
+              앱 바로 열기 · 켜짐 · {aarLabel(record)}
+            </Text>)}
 
             <View style={{ height: AppSpacing.lg }} />
 

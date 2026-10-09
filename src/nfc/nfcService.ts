@@ -12,6 +12,7 @@ import { Platform } from 'react-native';
 import NfcManager, { Ndef, NfcErrorIOS, NfcTech, NdefStatus } from 'react-native-nfc-manager';
 import type { NdefRecord } from 'react-native-nfc-manager';
 import { isValidHttpUrl } from '../utils/urlNormalizer';
+import { encodeLinkMessage, readAarRecords, type AarRecord } from './aar';
 
 /** feature-spec.md "4. Error Handling Specification" 의 에러 케이스 */
 export type NfcFailureReason =
@@ -29,12 +30,13 @@ export type NfcFailureReason =
 
 export type NfcWriteStage = 'waiting' | 'writing' | 'verifying';
 export interface NfcWriteOptions {
+  androidPackage?: string;
   signal?: AbortSignal;
   onStage?: (stage: NfcWriteStage) => void;
 }
 
 export type NfcWriteResult =
-  | { ok: true; message: string; usedBytes: number }
+  | { ok: true; message: string; usedBytes: number; androidPackage?: string }
   | { ok: false; reason: NfcFailureReason; message: string };
 
 export type NfcResult =
@@ -51,6 +53,8 @@ export interface NfcReadResult {
   capacity?: number;
   /** 쓰기 가능 여부 */
   writable?: boolean;
+  aarRecords?: AarRecord[];
+  usedBytes?: number;
   reason?: NfcFailureReason;
   message: string;
 }
@@ -75,6 +79,7 @@ export type NfcInspectResult =
     recordCount?: number;
     /** 그중 http(s) URL로 읽히는 링크 */
     urls: string[];
+    aarRecords?: AarRecord[];
     message: string;
   }
   | { ok: false; reason: NfcFailureReason; message: string };
@@ -209,6 +214,13 @@ async function getTagStatus(connectedTech: string | null | undefined): Promise<T
 /** Native type=byte[]; Android id=hex 문자열, iOS id=byte[]. 모든 필드와 순서 유지. */
 function encodeNativeRecords(records: Array<Omit<NdefRecord, 'id'> & { id?: number[] | string }>) {
   return Ndef.encodeMessage(records.map((record) => {
+    const validBytes = (value: unknown): value is number[] => Array.isArray(value) &&
+      value.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255);
+    if (!Number.isInteger(record.tnf) || record.tnf < 0 || record.tnf > 7 || !validBytes(record.payload) ||
+        (typeof record.type !== 'string' && !validBytes(record.type)) ||
+        (record.id !== undefined && typeof record.id !== 'string' && !validBytes(record.id))) {
+      throw new Error('Invalid native NDEF record');
+    }
     const type = typeof record.type === 'string' ? record.type : Ndef.util.bytesToString(record.type);
     // type 디코딩이 원래 바이트를 바꾸면 검증 실패로 처리한다.
     if (typeof type !== 'string' || (Array.isArray(record.type) &&
@@ -285,6 +297,7 @@ export const NfcService = {
     const checkCancelled = () => { if (signal?.aborted) throw new Error('cancelled'); };
     // 대기 중 외부 배열이 바뀌어도 이번에 쓸 전체 메시지는 그대로 유지한다.
     const snapshot = [...urls];
+    const androidPackage = Platform.OS === 'android' ? options.androidPackage : undefined;
     try {
       checkCancelled();
       onStage?.('waiting');
@@ -299,7 +312,7 @@ export const NfcService = {
         if (status.kind === 'not_ndef') return fail('not_ndef');
         if (!status.writable) return fail('read_only');
 
-        const bytes = Ndef.encodeMessage(snapshot.map((u) => Ndef.uriRecord(u)));
+        const bytes = encodeLinkMessage(snapshot, androidPackage);
         if (!bytes) return fail('failed');
 
         // 하드코딩된 144byte 대신 태그가 알려준 실제 용량으로 검사
@@ -334,7 +347,7 @@ export const NfcService = {
           await NfcManager.setAlertMessage('저장 완료').catch(() => {});
         }
         checkCancelled();
-        return { ok: true as const, message: '태그에 링크를 저장했습니다.', usedBytes: bytes.length };
+        return { ok: true as const, message: '태그에 링크를 저장했습니다.', usedBytes: bytes.length, androidPackage };
       }, signal);
     } catch (err) {
       return fail(signal?.aborted ? 'cancelled' : classifyError(err));
@@ -379,6 +392,9 @@ export const NfcService = {
           await NfcManager.setAlertMessage('읽기 완료').catch(() => {});
         }
 
+        let usedBytes: number | undefined;
+        try { usedBytes = encodeNativeRecords(records as never).length; } catch { /* 조회값을 추정하지 않는다. */ }
+
         return {
           ok: true,
           url,
@@ -386,6 +402,8 @@ export const NfcService = {
           capacity: status.capacity,
           writable: status.writable,
           message: '태그를 읽었습니다.',
+          aarRecords: readAarRecords(records),
+          usedBytes,
         };
       }, signal);
     } catch (err) {
@@ -435,6 +453,7 @@ export const NfcService = {
           usedBytes,
           recordCount: records?.length,
           urls: records ? extractUrls(records as never) : [],
+          aarRecords: records ? readAarRecords(records) : undefined,
           message: '태그 상태를 확인했습니다.',
         };
       }, signal);

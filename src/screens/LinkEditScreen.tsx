@@ -6,7 +6,7 @@
 
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { AccessibilityInfo, Alert, findNodeHandle, Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppPrimaryButton, AppSecondaryButton } from '@/components/AppButton';
@@ -16,7 +16,7 @@ import { WriteWaitingScreen } from '@/screens/WriteWaitingScreen';
 import { WriteFailureScreen } from '@/screens/WriteFailureScreen';
 import { AppCapacityGauge } from '@/components/AppCapacityGauge';
 import { CUSTOM_LINK_TYPE } from '@/models/linkType';
-import { useLinkWriter } from '@/state/LinkWriterContext';
+import { useLinkWriter, type WriterLink } from '@/state/LinkWriterContext';
 import { NfcService, type NfcWriteStage } from '@/nfc/nfcService';
 import { describeWarnings, warningsForLink } from '@/utils/linkWarnings';
 import { NdefSize } from '@/utils/ndefSize';
@@ -25,10 +25,20 @@ import { linkTypeIcon } from '@/theme/icons';
 import { AppColors, AppOpacity, AppRadius, AppSpacing, AppText } from '@/theme/tokens';
 import type { RootStackParamList } from '@/navigation';
 
+type AarNotice = { primary: WriterLink; revision: number };
+
 type Props = NativeStackScreenProps<RootStackParamList, 'LinkEdit'>;
 
 export function LinkEditScreen({ navigation, route }: Props) {
-  const { links, capacity, replaceFromTag, clear, removeLink, setPrimary, reorder } = useLinkWriter();
+  const { links, capacity, aarEnabled, primaryRevision, enableAar, disableAar, replaceFromTag, clear, removeLink, setPrimary, reorder } = useLinkWriter();
+  const [aarNotice, setAarNotice] = useState<AarNotice | null>(null);
+  const consent = useRef<AarNotice | null>(null);
+  const declineButton = useRef<View>(null);
+  const dismissNotice = useCallback(() => {
+    consent.current = null;
+    setAarNotice(null);
+  }, []);
+  const failedWrite = useRef<{ urls: string[]; androidPackage?: string; links: WriterLink[] } | null>(null);
   const [ready, setReady] = useState(false);
   const [reading, setReading] = useState(false);
   const [readError, setReadError] = useState<string | null>(null);
@@ -100,6 +110,7 @@ export function LinkEditScreen({ navigation, route }: Props) {
   useEffect(() => {
     mounted.current = true;
     const unsubscribe = navigation.addListener('blur', () => {
+      dismissNotice();
       setDragEpoch((value) => value + 1);
       if (writePending.current) cancelWrite();
       ++readRequest.current;
@@ -142,13 +153,37 @@ export function LinkEditScreen({ navigation, route }: Props) {
       readPending.current = false;
       unsubscribe();
     };
-  }, [navigation, route.params, clear, replaceFromTag, onRead, cancelWrite]);
+  }, [navigation, route.params, clear, replaceFromTag, onRead, cancelWrite, dismissNotice]);
+
+  const primary = links[0];
+  useEffect(() => {
+    if (consent.current && (consent.current.primary !== primary || consent.current.revision !== primaryRevision)) dismissNotice();
+  }, [primary, primaryRevision, dismissNotice]);
 
   const urls = links.map((l) => l.normalizedUrl);
-  const usedBytes = NdefSize.estimateMessageBytes(urls);
+  const androidPackage = Platform.OS === 'android' && aarEnabled ? primary?.linkType.androidPackage : undefined;
+  const linkBytes = NdefSize.estimateMessageBytes(urls);
+  const aarBytes = androidPackage ? NdefSize.aarBytes(androidPackage) : 0;
+  const usedBytes = NdefSize.estimateMessageBytes(urls, androidPackage);
   const totalCapacity = NdefSize.isValidCapacity(capacity) ? capacity : undefined;
   const overCapacity = totalCapacity !== undefined && usedBytes > totalCapacity;
   const cannotSave = totalCapacity === undefined || overCapacity;
+
+  const onAarChange = (enabled: boolean) => {
+    if (!ready || reading || writePending.current || dragging || !navigation.isFocused() || Platform.OS !== 'android') return;
+    if (!enabled) { dismissNotice(); disableAar(); return; }
+    if (!primary?.linkType.androidPackage || consent.current) return;
+    const notice = { primary, revision: primaryRevision };
+    consent.current = notice;
+    setAarNotice(notice);
+  };
+
+  const onAcceptAar = () => {
+    if (aarNotice && consent.current === aarNotice && mounted.current && navigation.isFocused() && ready && !writePending.current) {
+      enableAar(aarNotice.primary, aarNotice.revision);
+    }
+    dismissNotice();
+  };
 
   /**
    * 이상 안내·쓰기 실패 → ③ 태그 상태 확인 (D8·I4). 앞선 NFC 세션의 정리가 끝난 뒤에 연다.
@@ -199,12 +234,14 @@ export function LinkEditScreen({ navigation, route }: Props) {
   };
 
   const onSave = async () => {
-    if (!ready || reading || writePending.current || dragging || !navigation.isFocused() || links.length === 0 || cannotSave) return;
+    const saved = failedWrite.current ?? { urls: [...urls], androidPackage, links: [...links] };
+    if (!ready || reading || writePending.current || dragging || consent.current || !navigation.isFocused() ||
+        saved.urls.length === 0 || !NdefSize.canStoreAll(saved.urls, capacity, saved.androidPackage)) return;
     const request = ++writeRequest.current;
     const cancellation = new AbortController();
     writeCancellation.current = cancellation;
     writePending.current = true; // 렌더 전 연속 탭도 한 번만 저장한다.
-    const snapshot = [...urls];
+    const snapshot = saved.urls;
     setWriteStage('waiting');
     setWriting(true);
     setErrorMsg(null);
@@ -212,6 +249,7 @@ export function LinkEditScreen({ navigation, route }: Props) {
       !cancellation.signal.aborted && navigation.isFocused();
     try {
       const result = await NfcService.writeUrls(snapshot, {
+        androidPackage: saved.androidPackage,
         signal: cancellation.signal,
         onStage: (stage) => { if (active()) setWriteStage(stage); },
       });
@@ -221,12 +259,17 @@ export function LinkEditScreen({ navigation, route }: Props) {
       writeCancellation.current = null;
       setWriting(false);
       if (result.ok) {
-        navigation.navigate('WriteComplete', { urls: snapshot, usedBytes: result.usedBytes });
+        failedWrite.current = null;
+        navigation.navigate('WriteComplete', { urls: snapshot, usedBytes: result.usedBytes, androidPackage: result.androidPackage });
       } else if (result.reason !== 'cancelled') {
+        failedWrite.current = saved;
         setErrorMsg(result.message);
       }
     } catch {
-      if (active()) setErrorMsg('쓰기를 완료하지 못했습니다. 편집 내용은 유지됩니다. 전체 재쓰기로 다시 기록해주세요.');
+      if (active()) {
+        failedWrite.current = saved;
+        setErrorMsg('쓰기를 완료하지 못했습니다. 편집 내용은 유지됩니다. 전체 재쓰기로 다시 기록해주세요.');
+      }
     } finally {
       if (mounted.current && request === writeRequest.current) {
         writePending.current = false;
@@ -237,8 +280,8 @@ export function LinkEditScreen({ navigation, route }: Props) {
   };
 
   if (writing) return <WriteWaitingScreen stage={writeStage} onCancel={cancelWrite} />;
-  if (errorMsg) return <WriteFailureScreen message={errorMsg} links={links} capacity={capacity}
-    onRewrite={onSave} onEdit={() => setErrorMsg(null)} onDiagnose={onOpenDiagnosis} />;
+  if (errorMsg) return <WriteFailureScreen message={errorMsg} links={failedWrite.current?.links ?? links} capacity={capacity}
+    onRewrite={onSave} onEdit={() => { failedWrite.current = null; setErrorMsg(null); }} onDiagnose={onOpenDiagnosis} />;
 
   if (!ready) {
     return (
@@ -269,6 +312,16 @@ export function LinkEditScreen({ navigation, route }: Props) {
 
   return (
     <SafeAreaView style={styles.safe} edges={['bottom']}>
+      {Platform.OS === 'android' ? <View style={styles.aarPanel}>
+        <Text style={AppText.titleMedium}>{`현재 대표: ${primary ? primary.linkType.id === CUSTOM_LINK_TYPE.id ? hostOf(primary.normalizedUrl) : primary.linkType.label : '없음'}`}</Text>
+        <View style={styles.aarToggle}>
+          <Text style={AppText.bodyMedium}>안드로이드에서 앱 바로 열기</Text>
+          {primary?.linkType.androidPackage ? <Switch accessibilityLabel="안드로이드에서 앱 바로 열기"
+            accessibilityState={{ checked: aarEnabled, disabled: dragging || reading || !!aarNotice }}
+            value={aarEnabled} onValueChange={onAarChange} disabled={dragging || reading || !!aarNotice} />
+            : <Text style={AppText.labelSmall}>사용 불가</Text>}
+        </View>
+      </View> : null}
       <DraggableLinkList links={links} cancelToken={dragEpoch}
         onReorder={(from, to) => { if (navigation.isFocused() && !writePending.current) reorder(from, to); }}
         onDragging={setDragging}
@@ -281,6 +334,8 @@ export function LinkEditScreen({ navigation, route }: Props) {
 
             <View style={{ height: AppSpacing.lg }} />
             <AppCapacityGauge used={usedBytes} total={totalCapacity} linkCount={links.length} />
+            <Text style={AppText.bodyMedium}>링크 {links.length}개 · {linkBytes} B</Text>
+            {Platform.OS === 'android' ? <Text style={AppText.bodyMedium}>앱 바로 열기 설정 · {aarBytes} B</Text> : null}
 
             <View style={{ height: AppSpacing.lg }} />
 
@@ -345,7 +400,7 @@ export function LinkEditScreen({ navigation, route }: Props) {
                 <View style={{ height: 14 }} />
                 <AppInfoCard
                   title="용량 초과"
-                  message="태그 용량을 초과했습니다. 링크를 줄여야 저장할 수 있습니다."
+                  message={`태그 용량을 초과했습니다. 링크를 줄여야 저장할 수 있습니다.${aarBytes ? ` 앱 바로 열기 설정을 끄면 ${aarBytes} B가 생깁니다.` : ''}`}
                   variant="error"
                 />
               </>
@@ -358,16 +413,43 @@ export function LinkEditScreen({ navigation, route }: Props) {
         <AppPrimaryButton
           label="저장"
           onPress={onSave}
-          disabled={!ready || reading || dragging || links.length === 0 || cannotSave}
+          disabled={!ready || reading || dragging || !!aarNotice || links.length === 0 || cannotSave}
           loading={writing}
         />
       </View>
+      <Modal visible={!!aarNotice} transparent animationType="slide" onRequestClose={dismissNotice}
+        onShow={() => {
+          if (!consent.current) return;
+          declineButton.current?.focus();
+          const handle = findNodeHandle(declineButton.current);
+          if (handle !== null) AccessibilityInfo.setAccessibilityFocus(handle);
+        }}>
+        <View style={styles.noticeBackdrop}>
+          <ScrollView style={{ maxHeight: '90%' }} contentContainerStyle={styles.noticeSheet} accessibilityViewIsModal>
+            <Text style={AppText.titleLarge}>{aarNotice?.primary.linkType.label} 앱으로 바로 열기</Text>
+            <Text style={styles.noticeText}>⚠️ {aarNotice?.primary.linkType.label}이 설치되지 않은 기기에서는 프로필 대신 앱 설치 화면이 열립니다. 링크는 열리지 않습니다.</Text>
+            <Text style={styles.noticeText}>이 태그를 찍는 안드로이드 기기에서 브라우저를 거치지 않고 {aarNotice?.primary.linkType.label} 앱이 바로 열립니다.</Text>
+            <Text style={AppText.bodyMedium}>· 아이폰에서는 이 설정과 무관하게 동작합니다{'\n'}· 태그 용량 {aarNotice?.primary.linkType.androidPackage ? NdefSize.aarBytes(aarNotice.primary.linkType.androidPackage) : 0} B를 사용합니다{'\n'}· 태그를 다시 쓰면 해제됩니다</Text>
+            <Pressable ref={declineButton} focusable accessible accessibilityRole="button" accessibilityLabel="켜지 않음"
+              style={styles.declineButton} onPress={dismissNotice}>
+              <Text style={AppText.titleMedium}>켜지 않음</Text>
+            </Pressable>
+            <AppSecondaryButton label="켜기" onPress={onAcceptAar} />
+          </ScrollView>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: AppColors.background },
+  aarPanel: { marginHorizontal: AppSpacing.screenPadding, padding: 14, borderWidth: 1, borderColor: AppColors.border, borderRadius: AppRadius.card },
+  aarToggle: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  noticeBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: '#00000080' },
+  noticeSheet: { padding: AppSpacing.screenPadding, paddingBottom: AppSpacing.bottomSafePadding, backgroundColor: AppColors.background },
+  noticeText: { ...AppText.bodyMedium, marginVertical: AppSpacing.sm },
+  declineButton: { alignItems: 'center', padding: 16, marginVertical: AppSpacing.sm, borderWidth: 1, borderColor: AppColors.borderStrong, borderRadius: AppRadius.button },
   content: {
     paddingHorizontal: AppSpacing.screenPadding,
     paddingTop: 8,

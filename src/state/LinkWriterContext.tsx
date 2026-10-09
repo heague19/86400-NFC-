@@ -5,6 +5,7 @@
 // (드래그 순서 변경과는 별개 동작 — 대표는 오직 명시적 지정으로만 바뀐다.)
 
 import React, { createContext, useCallback, useContext, useMemo, useState } from 'react';
+import { Platform } from 'react-native';
 
 import type { LinkType, UrlDraft } from '@/models/linkType';
 import { CUSTOM_LINK_TYPE, detectLinkTypeFromUrl } from '@/models/linkType';
@@ -22,6 +23,11 @@ const rowId = () => `link-${++nextRowId}`;
 interface LinkWriterContextValue {
   /** 태그에 쓸 링크 목록. 0번이 항상 대표(대표 개념 없는 "빈 목록" 상태만 예외). */
   links: WriterLink[];
+  aarEnabled: boolean;
+  primaryRevision: number;
+  /** 고지 당시 대표 객체와 지금 대표가 같을 때만 켠다. */
+  enableAar: (primary: WriterLink, revision: number) => void;
+  disableAar: () => void;
   /** 현재 편집 중인 태그에서 조회한 실제 용량. 입력 화면에 다녀와도 유지한다. */
   capacity: number | undefined;
   /** 새 태그의 전체 URL로 교체. 읽은 문자열과 순서, 중복을 그대로 보존한다. */
@@ -45,7 +51,21 @@ interface LinkWriterContextValue {
 const LinkWriterContext = createContext<LinkWriterContextValue | undefined>(undefined);
 
 export function LinkWriterProvider({ children }: { children: React.ReactNode }) {
-  const [links, setLinks] = useState<WriterLink[]>([]);
+  const [writer, setWriter] = useState<{ links: WriterLink[]; aarEnabled: boolean; primaryRevision: number }>({ links: [], aarEnabled: false, primaryRevision: 0 });
+  const { links, aarEnabled, primaryRevision } = writer;
+  const setLinks = useCallback((update: WriterLink[] | ((prev: WriterLink[]) => WriterLink[])) => {
+    setWriter((prev) => {
+      const next = typeof update === 'function' ? update(prev.links) : update;
+      const samePrimary = next[0] === prev.links[0];
+      return { links: next, aarEnabled: samePrimary && prev.aarEnabled,
+        primaryRevision: prev.primaryRevision + (samePrimary ? 0 : 1) };
+    });
+  }, []);
+  const disableAar = useCallback(() => setWriter((prev) => ({ ...prev, aarEnabled: false, primaryRevision: prev.primaryRevision + 1 })), []);
+  const enableAar = useCallback((primary: WriterLink, revision: number) => {
+    setWriter((prev) => Platform.OS === 'android' && prev.primaryRevision === revision && prev.links[0] === primary && primary.linkType.androidPackage
+      ? { ...prev, aarEnabled: true } : prev);
+  }, []);
   const [capacity, setCapacity] = useState<number | undefined>(undefined);
   const [selectedLinkType, setSelectedLinkType] = useState<LinkType | null>(null);
 
@@ -66,7 +86,7 @@ export function LinkWriterProvider({ children }: { children: React.ReactNode }) 
     }));
     setCapacity(tagCapacity);
     setSelectedLinkType(null);
-  }, []);
+  }, [setLinks]);
 
   const selectLinkType = useCallback((linkType: LinkType) => {
     setSelectedLinkType(linkType);
@@ -74,15 +94,15 @@ export function LinkWriterProvider({ children }: { children: React.ReactNode }) 
 
   const addLink = useCallback((draft: UrlDraft) => {
     setLinks((prev) => [...prev, { ...draft, rowId: rowId() }]);
-  }, []);
+  }, [setLinks]);
 
   const updateLink = useCallback((index: number, draft: UrlDraft) => {
     setLinks((prev) => prev.map((item, i) => (i === index ? { ...draft, rowId: item.rowId } : item)));
-  }, []);
+  }, [setLinks]);
 
   const removeLink = useCallback((index: number) => {
     setLinks((prev) => prev.filter((_, i) => i !== index));
-  }, []);
+  }, [setLinks]);
 
   const setPrimary = useCallback((index: number) => {
     setLinks((prev) => {
@@ -92,7 +112,7 @@ export function LinkWriterProvider({ children }: { children: React.ReactNode }) 
       next.unshift(chosen);
       return next;
     });
-  }, []);
+  }, [setLinks]);
 
   const reorder = useCallback((fromIndex: number, toIndex: number) => {
     setLinks((prev) => {
@@ -112,17 +132,22 @@ export function LinkWriterProvider({ children }: { children: React.ReactNode }) 
       next.splice(toIndex, 0, moved);
       return next;
     });
-  }, []);
+  }, [setLinks]);
 
   const clear = useCallback(() => {
     setLinks([]);
     setCapacity(undefined);
     setSelectedLinkType(null);
-  }, []);
+    disableAar();
+  }, [setLinks, disableAar]);
 
   const value = useMemo<LinkWriterContextValue>(
     () => ({
       links,
+      aarEnabled,
+      primaryRevision,
+      enableAar,
+      disableAar,
       capacity,
       replaceFromTag,
       selectedLinkType,
@@ -134,7 +159,7 @@ export function LinkWriterProvider({ children }: { children: React.ReactNode }) 
       reorder,
       clear,
     }),
-    [links, capacity, replaceFromTag, selectedLinkType, selectLinkType, addLink, updateLink, removeLink, setPrimary, reorder, clear]
+    [links, aarEnabled, primaryRevision, enableAar, disableAar, capacity, replaceFromTag, selectedLinkType, selectLinkType, addLink, updateLink, removeLink, setPrimary, reorder, clear]
   );
 
   return <LinkWriterContext.Provider value={value}>{children}</LinkWriterContext.Provider>;

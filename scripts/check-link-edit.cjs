@@ -80,10 +80,11 @@ function load(file, imports) {
 }
 
 const model = load('src/models/linkType.ts', {});
-const size = load('src/utils/ndefSize.ts', { 'react-native-nfc-manager': { Ndef: require('react-native-nfc-manager/ndef-lib') } });
+const aar = load('src/nfc/aar.ts', { 'react-native-nfc-manager': { Ndef: require('react-native-nfc-manager/ndef-lib') }, '../models/linkType': model });
+const size = load('src/utils/ndefSize.ts', { 'react-native-nfc-manager': { Ndef: require('react-native-nfc-manager/ndef-lib') }, '../nfc/aar': aar });
 const normalizer = load('src/utils/urlNormalizer.ts', {});
 const state = load('src/state/LinkWriterContext.tsx', {
-  react: React, '@/models/linkType': model, '@/utils/ndefSize': size, '@/utils/urlNormalizer': normalizer,
+  react: React, 'react-native': { Platform: { OS: 'android' } }, '@/models/linkType': model, '@/utils/ndefSize': size, '@/utils/urlNormalizer': normalizer,
 });
 const warnings = load('src/utils/linkWarnings.ts', { '@/utils/urlNormalizer': normalizer });
 const tokens = load('src/theme/tokens.ts', {});
@@ -96,10 +97,12 @@ const service = { NfcService: {
   readUrl: async (signal) => { ++reads; return typeof readResult === 'function' ? readResult(signal) : readResult; },
   writeUrls: async (urls, options) => { writes.push(urls); return writeResult ? writeResult(urls, options) : { ok: true, message: 'saved', usedBytes: require('react-native-nfc-manager/ndef-lib').encodeMessage(urls.map((u) => require('react-native-nfc-manager/ndef-lib').uriRecord(u))).length }; },
 } };
+const accessibilityFocus = [];
 const placeholders = (...names) => Object.fromEntries(names.map((name) => [name, name]));
 const imports = {
   react: React,
-  'react-native': { ...placeholders('Image', 'ScrollView', 'Text', 'View', 'Pressable', 'KeyboardAvoidingView', 'Switch'),
+  'react-native': { ...placeholders('Image', 'ScrollView', 'Text', 'View', 'Pressable', 'KeyboardAvoidingView', 'Switch', 'Modal'),
+    AccessibilityInfo: { setAccessibilityFocus: (handle) => accessibilityFocus.push(handle) }, findNodeHandle: (ref) => ref?.node ?? null,
     StyleSheet: { create: (v) => v }, Alert: { alert: () => {} }, Linking: {}, Platform: { OS: 'android' } },
   'react-native-safe-area-context': { SafeAreaView: 'SafeAreaView' },
   'expo-clipboard': {},
@@ -115,6 +118,7 @@ const imports = {
   '@/utils/urlNormalizer': normalizer,
   '@/utils/linkWarnings': warnings,
   '@/nfc/nfcService': service,
+  '@/nfc/aar': aar,
   '@/theme/icons': { APP_ICONS: {}, APP_LOGO: {}, linkTypeIcon: () => 1 },
   '@/theme/tokens': tokens,
 };
@@ -129,6 +133,7 @@ for (const name of ['Home', 'LinkEdit', 'TagRead', 'LinkTypeSelect', 'InstagramI
 function nodes(tree) {
   if (!tree || typeof tree !== 'object') return [];
   if (Array.isArray(tree)) return tree.flatMap(nodes);
+  if (tree.type === 'Modal' && !tree.props.visible) return [];
   if (tree.type === 'DraggableLinkList') return [tree, ...nodes(tree.props.header), ...tree.props.links.flatMap((l, i) => nodes(tree.props.renderRow(l, i))), ...nodes(tree.props.footer)];
   if (typeof tree.type === 'function' && tree.type.name.endsWith('Screen')) return [tree, ...nodes(tree.type(tree.props))];
   return [tree, ...nodes(tree.props?.children)];
@@ -140,6 +145,7 @@ class Harness {
     writes = [];
     this.hosts = new Map();
     this.listeners = new Map();
+    this.focusListeners = new Map();
     this.router = StackRouter({ initialRouteName: 'Home' });
     this.options = { routeNames: ['Home', 'LinkEdit', 'TagRead', 'LinkTypeSelect', 'InstagramInput', 'CustomUrlInput', 'WriteComplete', 'TagInfo'],
       routeParamList: {}, routeGetIdList: {} };
@@ -159,10 +165,11 @@ class Harness {
     return {
       isFocused: () => this.route.key === key,
       addListener: (event, fn) => {
-        assert.equal(event, 'blur');
-        if (!this.listeners.has(key)) this.listeners.set(key, new Set());
-        this.listeners.get(key).add(fn);
-        return () => this.listeners.get(key).delete(fn);
+        assert.ok(['blur', 'focus'].includes(event));
+        const listeners = event === 'focus' ? this.focusListeners : this.listeners;
+        if (!listeners.has(key)) listeners.set(key, new Set());
+        listeners.get(key).add(fn);
+        return () => listeners.get(key).delete(fn);
       },
       reset: (state) => this.dispatch({ type: 'RESET', payload: state }),
       navigate: (name, params) => this.dispatch({ type: 'NAVIGATE', payload: { name, params } }),
@@ -176,6 +183,7 @@ class Harness {
     assert.ok(next, `Rejected navigation: ${action.type}`);
     this.stack = this.router.getRehydratedState(next, this.options);
     if (previous.key !== this.route.key) for (const fn of this.listeners.get(previous.key) ?? []) fn();
+    if (previous.key !== this.route.key) for (const fn of this.focusListeners.get(this.route.key) ?? []) fn();
     this.sync();
     this.flush();
   }
@@ -226,7 +234,7 @@ const urls = [
   'https://www.instagram.com/Mixed_Name/',
   'https://example.com/A%2fb?token=A~B&utm_source=other&flag#Keep',
 ];
-const success = (list = urls, capacity = 512) => ({ ok: true, url: list[0], urls: list, capacity, writable: true, message: 'read' });
+const success = (list = urls, capacity = 512) => ({ ok: true, url: list[0], urls: list, capacity, writable: true, usedBytes: require('react-native-nfc-manager/ndef-lib').encodeMessage(list.map((url) => require('react-native-nfc-manager/ndef-lib').uriRecord(url))).length, message: 'read' });
 const deferred = () => { let resolve, reject; const promise = new Promise((r, j) => { resolve = r; reject = j; }); return { promise, resolve, reject }; };
 const contextUrls = (h) => h.context.links.map((l) => l.normalizedUrl);
 const NdefCodec = require('react-native-nfc-manager/ndef-lib');
@@ -832,9 +840,108 @@ const invalidCapacities = [undefined, null, 0, -1, NaN, Infinity, 1.5, '144', Nu
     'react-native-nfc-manager': { __esModule: true, default: nativeManager, Ndef,
       NdefStatus: { NotSupported: 1, ReadWrite: 2, ReadOnly: 3 }, NfcTech: { Ndef: 'Ndef' } },
     '../utils/urlNormalizer': normalizer,
+    './aar': aar,
   }).NfcService;
   readResult = (signal) => actualService.readUrl(signal);
   writeResult = (urls, opts) => actualService.writeUrls(urls, opts);
+  // Android 6-1..7: actual screen handlers/provider/service, only native NFC and view mounting mocked.
+  const screenText = (host) => nodes(host.editor.tree).filter((n) => n.type === 'Text').flatMap((n) => n.props.children).join(' ');
+  const openNotice = (host) => { host.find('Switch').onValueChange(true); host.flush(); return host.find('Modal'); };
+  const acceptNotice = (host) => { openNotice(host); host.press('켜기'); assert.equal(host.context.aarEnabled, true); };
+  const aarSeed = ['https://www.instagram.com/hong/', 'https://github.com/hong', 'https://x.com/hong'];
+  nativeCapacity = 512; nativeTag = { ndefMessage: aarSeed.map((u) => Ndef.uriRecord(u)) };
+  h = new Harness(); h.enterEdit(); await h.settle();
+  const seedPrimary = h.context.links[0];
+  assert.equal(h.context.aarEnabled, false, 'New session starts off');
+  assert.equal(h.find('Switch').value, false);
+  let notice = openNotice(h);
+  assert.equal(h.find('Switch').value, false, 'Opening notice never enables immediately');
+  assert.equal(h.find('AppPrimaryButton', (p) => p.label === '저장').disabled, true);
+  const noticeText = screenText(h);
+  assert.ok(noticeText.indexOf('프로필 대신 앱 설치 화면') < noticeText.indexOf('브라우저를'));
+  assert.ok(noticeText.includes('링크는 열리지 않습니다.'));
+  assert.ok(noticeText.includes('39'));
+  const decline = h.find('Pressable', (p) => p.accessibilityLabel === '켜지 않음');
+  let focused = false;
+  decline.ref.current = { node: 17, focus: () => { focused = true; } };
+  notice.onShow(); assert.equal(focused, true); assert.equal(accessibilityFocus.at(-1), 17);
+  let lateAccept = h.find('AppSecondaryButton', (p) => p.label === '켜기').onPress;
+  decline.onPress(); h.flush(); lateAccept(); h.flush(); assert.equal(h.context.aarEnabled, false);
+  notice = openNotice(h); lateAccept = h.find('AppSecondaryButton', (p) => p.label === '켜기').onPress;
+  notice.onRequestClose(); h.flush(); lateAccept(); h.flush(); assert.equal(h.context.aarEnabled, false, 'Android modal back cancels consent');
+  openNotice(h); lateAccept = h.find('AppSecondaryButton', (p) => p.label === '켜기').onPress;
+  h.context.setPrimary(1); h.context.setPrimary(1); // A -> B -> A before rendering.
+  lateAccept(); h.flush(); assert.equal(h.context.aarEnabled, false, 'Returning to the original row cannot revive stale consent');
+  assert.equal(h.context.links[0], seedPrimary);
+  acceptNotice(h);
+  const expectedTotal = Ndef.encodeMessage([...aarSeed.map((u) => Ndef.uriRecord(u)), Ndef.androidApplicationRecord('com.instagram.android')]).length;
+  assert.equal(h.find('AppCapacityGauge').used, expectedTotal);
+  assert.equal(h.find('AppCapacityGauge').total, 512);
+  assert.ok(screenText(h).includes('39'));
+  h.find('Switch').onValueChange(false); h.flush(); assert.equal(h.context.aarEnabled, false);
+  assert.equal(h.find('AppCapacityGauge').used, expectedTotal - 39);
+  openNotice(h); assert.equal(h.find('Switch').value, false, 'Manual off -> on requires a fresh notice'); h.press('켜기');
+  h.context.reorder(1, 2); h.flush(); assert.equal(h.context.aarEnabled, true, 'Non-primary reorder retains approval');
+  h.context.updateLink(1, { ...h.context.links[1], normalizedUrl: 'https://x.com/updated' }); h.flush();
+  assert.equal(h.context.aarEnabled, true, 'Non-primary edit retains approval');
+  h.press('링크 추가'); h.back(); assert.equal(h.context.aarEnabled, true, 'Input back keeps the same session');
+  h.context.updateLink(0, { ...h.context.links[0] }); h.flush(); assert.equal(h.context.aarEnabled, false, 'Primary edit resets even for the same URL');
+  acceptNotice(h); h.context.removeLink(0); h.flush(); assert.equal(h.context.aarEnabled, false, 'Primary deletion/succession resets');
+  acceptNotice(h); h.back(); assert.equal(h.route.name, 'Home'); assert.equal(h.context.aarEnabled, false, 'Home focus ends session immediately');
+  h.enterEdit(); await h.settle(); openNotice(h); lateAccept = h.find('AppSecondaryButton', (p) => p.label === '켜기').onPress;
+  h.back(); h.enterEdit(); await h.settle(); lateAccept(); h.flush();
+  assert.equal(h.context.aarEnabled, false, 'Old consent cannot enable a new Home session'); h.dispose();
+  // Every service has one independent panel switch, starts off, and uses its actual encoded cost.
+  for (const type of model.LINK_TYPES.filter((t) => t.androidPackage)) {
+    nativeTag = { ndefMessage: [Ndef.uriRecord(type.urlPattern.replace('{handle}', 'hong'))] };
+    h = new Harness(); h.enterEdit(); await h.settle();
+    assert.equal(nodes(h.editor.tree).filter((node) => node.type === 'Switch').length, 1);
+    assert.equal(h.context.aarEnabled, false); acceptNotice(h);
+    const expected = Ndef.encodeMessage([Ndef.uriRecord(contextUrls(h)[0]), Ndef.androidApplicationRecord(type.androidPackage)]);
+    assert.equal(h.find('AppCapacityGauge').used, expected.length);
+    await h.press('저장'); await h.settle();
+    assert.equal(h.route.name, 'WriteComplete'); assert.deepEqual(nativeWriteMessages.at(-1), expected);
+    assert.equal(h.route.params.androidPackage, type.androidPackage);
+    assert.ok(screenText(h).includes(type.label));
+    h.press('링크 더 추가하기'); h.back();
+    assert.equal(h.context.aarEnabled, true, 'Continuation returns without resetting or another notice');
+    assert.equal(h.find('Switch').value, true); await h.press('저장'); await h.settle();
+    assert.deepEqual(nativeWriteMessages.at(-1), expected, 'Repeat writes exactly one AAR');
+    h.press('완료'); assert.equal(h.context.aarEnabled, false); h.dispose();
+  }
+  nativeTag = { ndefMessage: [Ndef.uriRecord('https://example.com/custom')] };
+  h = new Harness(); h.enterEdit(); await h.settle();
+  assert.equal(nodes(h.editor.tree).some((node) => node.type === 'Switch'), false, 'Custom representative has no toggle'); h.dispose();
+  nativeTag = { ndefMessage: [Ndef.uriRecord(aarSeed[0])] };
+  nativeCapacity = Ndef.encodeMessage(nativeTag.ndefMessage).length;
+  h = new Harness(); h.enterEdit(); await h.settle(); acceptNotice(h);
+  assert.equal(h.find('AppCapacityGauge').total, nativeCapacity, 'AAR cost never shrinks measured denominator');
+  assert.equal(h.find('AppPrimaryButton', (p) => p.label === '저장').disabled, true);
+  assert.ok(h.find('AppInfoCard', (p) => p.title === '용량 초과').message.includes('끄면 39 B'));
+  const beforeOverflow = nativeWriteMessages.length;
+  await h.find('AppPrimaryButton', (p) => p.label === '저장').onPress(); await h.settle();
+  assert.equal(nativeWriteMessages.length, beforeOverflow, 'Overflow handler blocks even direct invocation');
+  h.find('Switch').onValueChange(false); h.flush(); assert.equal(h.find('AppPrimaryButton', (p) => p.label === '저장').disabled, false);
+  await h.press('저장'); await h.settle(); assert.equal(h.route.params.androidPackage, undefined); h.dispose();
+  // Failure recovery retains the saved URL+option snapshot even if context is changed externally.
+  nativeCapacity = 512; nativeTag = { ndefMessage: aarSeed.map((u) => Ndef.uriRecord(u)) };
+  h = new Harness(); h.enterEdit(); await h.settle(); acceptNotice(h); nativeMismatch = true;
+  await h.press('저장'); await h.settle();
+  const failedBytes = [...nativeWriteMessages.at(-1)];
+  assert.ok(h.find(imports['@/screens/WriteFailureScreen'].WriteFailureScreen));
+  h.context.disableAar(); h.context.setPrimary(1); h.flush();
+  nativeMismatch = false; await h.press('전체 재쓰기'); await h.settle();
+  assert.deepEqual(nativeWriteMessages.at(-1), failedBytes);
+  assert.equal(h.route.params.androidPackage, 'com.instagram.android'); h.dispose();
+  // Existing AAR on a read tag never auto-enables writing.
+  nativeTag = { ndefMessage: [Ndef.uriRecord(aarSeed[0]), Ndef.androidApplicationRecord('com.instagram.android')] };
+  h = new Harness(); h.enterEdit(); await h.settle(); assert.equal(h.context.aarEnabled, false); h.dispose();
+  imports['react-native'].Platform.OS = 'ios';
+  h = new Harness(); h.enterEdit(); await h.settle();
+  assert.equal(nodes(h.editor.tree).some((node) => node.type === 'Switch' || node.type === 'Modal' && node.props.visible), false);
+  assert.equal(screenText(h).includes('안드로이드에서 앱 바로 열기'), false, 'No iOS AAR option in this scope');
+  h.dispose(); imports['react-native'].Platform.OS = 'android';
+  console.log('PASS: AAR actual UI notice loss-first/cancel-focus/back/stale consent; A->B->A/edit/delete/Home reset; non-primary/input/continuation retention; six defaults/package bytes/native writes; overflow toggle; failed snapshot rewrite; custom/iOS absent; existing tag AAR starts off');
   for (const capacity of [137, 140, 144]) {
     nativeCapacity = capacity;
     nativeTag = { ndefMessage: [Ndef.uriRecord(boundaryUrl)] };

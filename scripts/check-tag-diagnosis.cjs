@@ -157,12 +157,13 @@ const state = load('src/state/LinkWriterContext.tsx', {
 const warnings = load('src/utils/linkWarnings.ts', { '@/utils/urlNormalizer': normalizer });
 const tokens = load('src/theme/tokens.ts', {});
 const placeholders = (...names) => Object.fromEntries(names.map((name) => [name, name]));
+const openedUrls = [], copiedUrls = [];
 const imports = {
   react: React,
   'react-native': { ...placeholders('Image', 'ScrollView', 'Text', 'View', 'Pressable', 'KeyboardAvoidingView', 'Switch', 'Modal'),
-    StyleSheet: { create: (v) => v }, Alert: { alert: () => {} }, Linking: {}, Platform },
+    StyleSheet: { create: (v) => v }, Alert: { alert: () => {} }, Linking: { openURL: async (url) => { openedUrls.push(url); } }, Platform },
   'react-native-safe-area-context': { SafeAreaView: 'SafeAreaView' },
-  'expo-clipboard': {},
+  'expo-clipboard': { setStringAsync: async (url) => { copiedUrls.push(url); return true; } },
   '@/components/AppButton': placeholders('AppPrimaryButton', 'AppSecondaryButton'),
   '@/components/AppCards': placeholders('AppInfoCard', 'AppActionCard'),
   '@/components/DraggableLinkList': { DraggableLinkList: 'DraggableLinkList' },
@@ -197,6 +198,21 @@ function nodes(tree) {
   return [tree, ...nodes(tree.props?.children)];
 }
 const textOf = (tree) => nodes(tree).filter((n) => n.type === 'Text').flatMap((n) => n.props.children).join(' ').replace(/\s+/g, ' ');
+
+function assertAarCards(h, labels) {
+  const rendered = nodes(h.editor.tree);
+  const cards = rendered.filter((n) => n.type === 'View' && n.props.children.some((child) =>
+    child?.type === 'Text' && textOf(child) === '앱 바로 열기 레코드'));
+  assert.deepEqual(cards.map(textOf), labels.map((label) => `앱 바로 열기 레코드 ${label} 태그에 저장됨`));
+  for (const card of cards) {
+    assert.ok(nodes(card).every((n) => n.type !== 'Pressable' && !n.props.onPress && !n.props.onLongPress), 'AAR card is read-only');
+    const hint = rendered.findIndex((n) => n.type === 'Text' && textOf(n) === '탭하면 링크 열기 · 길게 누르면 주소 복사');
+    assert.ok(hint > rendered.findLastIndex((n) => n.type === 'Pressable') && rendered.indexOf(card) > hint,
+      'AAR cards follow the URL list and its open/copy hint');
+    const linkStyle = h.find('Pressable').style({ pressed: false })[0];
+    assert.equal(card.props.style[0], linkStyle, 'AAR reuses URL card border, padding and theme');
+  }
+}
 
 class Harness {
   constructor() {
@@ -514,9 +530,12 @@ async function inspect(config) {
     assert.equal(h.items()['기록된 레코드'], '2개'); noWrites(); h.dispose();
     native({ status: rw(504), tag: tagOf(records) }); h = new Harness();
     h.card('링크 보기').onPress(); h.flush(); await h.press('태그 읽기'); await h.settle();
-    assert.ok(h.text().includes(`앱 바로 열기 · 켜짐 · ${label}`));
-    assert.equal(h.find('AppCapacityGauge').used, encoded(records));
-    assert.equal(h.find('AppCapacityGauge').total, 504);
+    assertAarCards(h, [label]);
+    const readGauge = h.find('AppCapacityGauge');
+    assert.deepEqual([readGauge.used, readGauge.total, readGauge.linkCount], [encoded(records), 504, 1]);
+    const link = h.find('Pressable', (p) => p.onPress && p.onLongPress);
+    await link.onPress(); await link.onLongPress();
+    assert.equal(openedUrls.at(-1), U1); assert.equal(copiedUrls.at(-1), U1);
     h.press('수정하기'); await h.settle();
     assert.equal(h.context.aarEnabled, false, 'Read native AAR is display-only until new consent'); h.dispose();
   }
@@ -536,9 +555,28 @@ async function inspect(config) {
     await h.press('태그 읽기'); await h.settle();
     assert.equal(h.has('AppCapacityGauge'), false, 'Unreadable native whole-message never falls back to URL bytes');
     assert.ok(h.text().includes('사용량 확인 불가')); assert.ok(h.text().includes(U1));
-    assert.ok(h.text().includes(expectedLabel));
+    assertAarCards(h, [expectedLabel]);
     assert.ok(h.has('Pressable', (p) => p.onPress && p.onLongPress), 'Original URL open/copy remains available'); h.dispose();
   }
+  for (const [extraRecords, labels] of [
+    [[], []],
+    [[aar, Ndef.androidApplicationRecord('org.example.unknown')], ['Instagram', 'org.example.unknown']],
+    [[{ ...aar, payload: [] }, { ...aar, payload: [0xff] }], ['패키지 확인 불가', '패키지 확인 불가']],
+  ]) {
+    const records = [uri(U1), uri(U2), ...extraRecords];
+    native({ status: rw(504), tag: tagOf(records) }); h = new Harness();
+    h.card('링크 보기').onPress(); h.flush(); await h.settle(); await h.press('태그 읽기'); await h.settle();
+    assertAarCards(h, labels);
+    const gauge = h.find('AppCapacityGauge');
+    assert.deepEqual([gauge.used, gauge.total, gauge.linkCount], [encoded(records), 504, 2], 'AAR is included exactly once in native usage, never in link count');
+    const links = nodes(h.editor.tree).filter((n) => n.type === 'Pressable');
+    assert.equal(links.length, 2, 'Only URI records are interactive');
+    const openStart = openedUrls.length, copyStart = copiedUrls.length;
+    for (const link of links) { await link.props.onPress(); await link.props.onLongPress(); }
+    assert.deepEqual(openedUrls.slice(openStart), [U1, U2]); assert.deepEqual(copiedUrls.slice(copyStart), [U1, U2]);
+    noWrites(); h.dispose();
+  }
+  console.log('PASS: read-only AAR cards after URI links/hint; native service/unknown/empty/malformed/multiple/absent; whole usage/capacity/link count unchanged; link open/copy intact');
   console.log('PASS: native AAR ①/③ six services + unknown + malformed payload, absence hidden, exact whole bytes/count, URL-less AAR diagnosis, unserializable AAR reports unknown usage with URL open/copy preserved');
   // Text-only, blank, unserializable tags show exact values or "확인 불가", no URL-derived stand-ins.
   h = await open({ status: rw(), tag: tagOf([Ndef.textRecord('Hi')]) });

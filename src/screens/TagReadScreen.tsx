@@ -196,9 +196,6 @@ export function TagReadScreen({ navigation }: Props) {
             {/* 용량은 태그가 보고한 실측값. 추정하지 않는다 */}
             {bytes !== undefined ? <AppCapacityGauge used={bytes} total={total} linkCount={tag.urls.length} />
               : <Text style={AppText.bodyMedium}>사용량 확인 불가 · 전체 용량 {total === undefined ? '확인 불가' : `${total} B`}</Text>}
-            {tag.aarRecords?.map((record, index) => <Text key={index} style={AppText.bodyMedium}>
-              앱 바로 열기 · 켜짐 · {aarLabel(record)}
-            </Text>)}
 
             <View style={{ height: AppSpacing.lg }} />
 
@@ -241,6 +238,13 @@ export function TagReadScreen({ navigation }: Props) {
 
             <View style={{ height: AppSpacing.sm }} />
             <Text style={styles.hint}>탭하면 링크 열기 · 길게 누르면 주소 복사</Text>
+            {tag.aarRecords?.map((record, index) => (
+              <View key={index} style={[styles.linkCard, styles.aarCard]}>
+                <Text style={styles.linkTitle}>앱 바로 열기 레코드</Text>
+                <Text style={styles.linkUrl}>{aarLabel(record)}</Text>
+                <Text style={styles.linkSize}>태그에 저장됨</Text>
+              </View>
+            ))}
             {tag.writable === false ? (
               <>
                 <View style={{ height: AppSpacing.lg }} />
@@ -339,6 +343,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   linkCardPressed: { backgroundColor: AppColors.backgroundSubtle },
+  aarCard: { flexDirection: 'column', alignItems: 'flex-start', marginTop: AppSpacing.itemGap },
   linkIcon: { width: 38, height: 38, borderRadius: 9 },
   linkTextCol: { flex: 1, marginLeft: 12, marginRight: AppSpacing.sm },
   linkTitleRow: { flexDirection: 'column', alignItems: 'flex-start' },

@@ -6,7 +6,7 @@
 
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import * as Clipboard from 'expo-clipboard';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Image, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -49,6 +49,7 @@ export function TagReadScreen({ navigation }: Props) {
   const readCancellation = useRef<AbortController | null>(null);
   const diagnosing = useRef(false);
   const mounted = useRef(false);
+  const initialReadStarted = useRef(false);
 
   useEffect(() => {
     mounted.current = true;
@@ -71,19 +72,8 @@ export function TagReadScreen({ navigation }: Props) {
     };
   }, [navigation]);
 
-  // 진입 시 NFC 지원 여부 확인
-  useEffect(() => {
-    let alive = true;
-    NfcService.isSupported().then((ok) => {
-      if (alive) setNfcAvailable(ok);
-    });
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  const onRead = async () => {
-    if (readPending.current || !navigation.isFocused()) return;
+  const onRead = useCallback(async () => {
+    if (!mounted.current || readPending.current || !navigation.isFocused()) return;
     const request = ++readRequest.current;
     // 화면을 떠나면 이 요청의 NFC 세션도 취소해야 다른 NFC 화면(③ 등)이 바로 열린다.
     const cancellation = new AbortController();
@@ -94,6 +84,10 @@ export function TagReadScreen({ navigation }: Props) {
     setDiagnosable(false);
     setTag(null); // 새 읽기가 실패/취소돼도 이전 태그로 수정하기에 진입하지 않는다.
     try {
+      const supported = await NfcService.isSupported().catch(() => false);
+      if (!mounted.current || request !== readRequest.current || !navigation.isFocused()) return;
+      setNfcAvailable(supported);
+      if (!supported) return;
       const result = await NfcService.readUrl(cancellation.signal);
       if (!mounted.current || request !== readRequest.current || !navigation.isFocused()) return;
       setDiagnosable(result.writable === false || result.reason === 'not_ndef' || result.reason === 'status_unknown');
@@ -120,7 +114,18 @@ export function TagReadScreen({ navigation }: Props) {
         setReading(false);
       }
     }
-  };
+  }, [navigation]);
+
+  useEffect(() => {
+    const startInitialRead = () => {
+      if (initialReadStarted.current || !navigation.isFocused()) return;
+      initialReadStarted.current = true;
+      void onRead();
+    };
+    const unsubscribe = navigation.addListener('focus', startInitialRead);
+    startInitialRead();
+    return unsubscribe;
+  }, [navigation, onRead]);
 
   /** U6 — 탭하면 브라우저로 열기 */
   const onOpen = async (url: string) => {

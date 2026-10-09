@@ -96,13 +96,14 @@ function native(config = {}) {
   cfg = { ...config }; events = []; sessionOpen = false; heldRequest = undefined; calls = { supported: 0 };
 }
 const manager = {
-  isSupported: async () => { ++calls.supported; if (cfg.supportError) throw new Error('support query failed'); return cfg.supported !== false; },
+  isSupported: async () => { ++calls.supported; await cfg.supportGate?.promise; if (cfg.supportError) throw new Error('support query failed'); return cfg.supported !== false; },
   start: async () => {},
   isEnabled: async () => cfg.enabled !== false,
   requestTechnology: async () => {
     events.push('request');
     // Android answers ERR_MULTI_REQ while an earlier technology request is still registered.
     if (sessionOpen) throw new Error('You can only issue one request at a time');
+    if (cfg.requestError) throw new Error(cfg.requestError);
     sessionOpen = true;
     if (cfg.holdRequest) await new Promise((resolve, reject) => { heldRequest = { resolve, reject }; });
     await cfg.requestGate?.promise;
@@ -116,10 +117,11 @@ const manager = {
   },
   getTag: async () => {
     events.push('tag');
+    const tag = cfg.tag ?? { ndefMessage: [] };
     await cfg.tagGate?.promise;
     if (cfg.tagError) throw new Error('tag lookup failed');
     if (cfg.tagNull) return null;
-    return cfg.tag ?? { ndefMessage: [] };
+    return tag;
   },
   ndefHandler: {
     getNdefStatus: async () => {
@@ -216,7 +218,7 @@ function assertAarCards(h, labels) {
 
 class Harness {
   constructor() {
-    this.hosts = new Map(); this.listeners = new Map();
+    this.hosts = new Map(); this.listeners = new Map(); this.focusListeners = new Map();
     this.router = StackRouter({ initialRouteName: 'Home' });
     this.options = { routeNames: ['Home', 'LinkEdit', 'TagRead', 'LinkTypeSelect', 'InstagramInput', 'CustomUrlInput', 'WriteComplete', 'TagInfo'],
       routeParamList: {}, routeGetIdList: {} };
@@ -237,10 +239,10 @@ class Harness {
       isFocused: () => this.route.key === key,
       addListener: (event, fn) => {
         assert.ok(['blur', 'focus'].includes(event));
-        if (event === 'focus') return () => {};
-        if (!this.listeners.has(key)) this.listeners.set(key, new Set());
-        this.listeners.get(key).add(fn);
-        return () => this.listeners.get(key).delete(fn);
+        const listeners = event === 'focus' ? this.focusListeners : this.listeners;
+        if (!listeners.has(key)) listeners.set(key, new Set());
+        listeners.get(key).add(fn);
+        return () => listeners.get(key).delete(fn);
       },
       reset: (next) => this.dispatch({ type: 'RESET', payload: next }),
       navigate: (name, params) => this.dispatch({ type: 'NAVIGATE', payload: { name, params } }),
@@ -253,6 +255,7 @@ class Harness {
     assert.ok(next, `Rejected navigation: ${action.type}`);
     this.stack = this.router.getRehydratedState(next, this.options);
     if (previous.key !== this.route.key) for (const fn of this.listeners.get(previous.key) ?? []) fn();
+    if (previous.key !== this.route.key) for (const fn of this.focusListeners.get(this.route.key) ?? []) fn();
     this.sync(); this.flush();
   }
   sync() {
@@ -529,7 +532,7 @@ async function inspect(config) {
     assert.equal(h.items()['사용량'], `${encoded(records)} B`);
     assert.equal(h.items()['기록된 레코드'], '2개'); noWrites(); h.dispose();
     native({ status: rw(504), tag: tagOf(records) }); h = new Harness();
-    h.card('링크 보기').onPress(); h.flush(); await h.press('태그 읽기'); await h.settle();
+    h.card('링크 보기').onPress(); h.flush(); await h.settle();
     assertAarCards(h, [label]);
     const readGauge = h.find('AppCapacityGauge');
     assert.deepEqual([readGauge.used, readGauge.total, readGauge.linkCount], [encoded(records), 504, 1]);
@@ -552,7 +555,7 @@ async function inspect(config) {
     assert.equal(h.items()['기록된 레코드'], '2개'); assert.equal(h.items()['앱 바로 열기'], `켜짐 · ${expectedLabel}`);
     assert.equal(h.has('AppCapacityGauge'), false); h.dispose();
     native({ status: rw(), tag }); h = new Harness(); h.card('링크 보기').onPress(); h.flush();
-    await h.press('태그 읽기'); await h.settle();
+    await h.settle();
     assert.equal(h.has('AppCapacityGauge'), false, 'Unreadable native whole-message never falls back to URL bytes');
     assert.ok(h.text().includes('사용량 확인 불가')); assert.ok(h.text().includes(U1));
     assertAarCards(h, [expectedLabel]);
@@ -565,7 +568,7 @@ async function inspect(config) {
   ]) {
     const records = [uri(U1), uri(U2), ...extraRecords];
     native({ status: rw(504), tag: tagOf(records) }); h = new Harness();
-    h.card('링크 보기').onPress(); h.flush(); await h.settle(); await h.press('태그 읽기'); await h.settle();
+    h.card('링크 보기').onPress(); h.flush(); await h.settle();
     assertAarCards(h, labels);
     const gauge = h.find('AppCapacityGauge');
     assert.deepEqual([gauge.used, gauge.total, gauge.linkCount], [encoded(records), 504, 2], 'AAR is included exactly once in native usage, never in link count');
@@ -667,10 +670,108 @@ async function inspect(config) {
     native(config);
     const harness = new Harness();
     harness.card('링크 보기').onPress(); harness.flush(); await harness.settle();
-    if (!harness.find('AppPrimaryButton', (p) => p.label === '태그 읽기').disabled) await harness.press('태그 읽기'); // no NFC: disabled
-    await harness.settle();
     return harness;
   };
+
+  // First focus owns one automatic read; later focus and failures require an explicit retry.
+  const requests = () => events.filter((e) => e === 'request').length;
+  native({ holdRequest: true, status: rw(504), tag: tagOf([uri(U1), uri(U2), uri(U1), aar]) });
+  h = new Harness(); await h.settle();
+  assert.equal(calls.supported, 0); assert.equal(requests(), 0, 'Home opens no NFC request');
+  const view = h.card('링크 보기'); view.onPress(); h.flush(); view.onPress(); h.flush();
+  const waiting = h.find('AppPrimaryButton');
+  assert.equal(waiting.label, '태그를 대세요…'); assert.equal(waiting.loading, true);
+  assert.equal(h.find('AppRingBadge').active, true);
+  waiting.onPress(); waiting.onPress(); await h.settle();
+  assert.equal(requests(), 1, 'Entry and duplicate taps open exactly one native read');
+  heldRequest.resolve(); cfg.holdRequest = false; await h.settle();
+  const resultTree = h.editor.tree;
+  assertAarCards(h, ['Instagram']);
+  const gaugeBefore = h.find('AppCapacityGauge');
+  assert.deepEqual([gaugeBefore.used, gaugeBefore.total, gaugeBefore.linkCount],
+    [encoded([uri(U1), uri(U2), uri(U1), aar]), 504, 3]);
+  const links = nodes(resultTree).filter((n) => n.type === 'Pressable');
+  assert.deepEqual(links.map((n) => textOf(n).includes('탭하면 이 링크가 열립니다')), [true, false, false]);
+  const beforeOpen = openedUrls.length, beforeCopy = copiedUrls.length;
+  for (const link of links) { await link.props.onPress(); await link.props.onLongPress(); }
+  assert.deepEqual(openedUrls.slice(beforeOpen), [U1, U2, U1]);
+  assert.deepEqual(copiedUrls.slice(beforeCopy), [U1, U2, U1]);
+  for (const fn of h.listeners.get(h.route.key) ?? []) fn();
+  for (const fn of h.focusListeners.get(h.route.key) ?? []) fn();
+  await h.settle(); assert.equal(requests(), 1, 'External app return does not reread');
+  h.press('수정하기'); await h.settle();
+  assert.deepEqual(h.route.params, { urls: [U1, U2, U1], capacity: 504, writable: true });
+  assert.equal(requests(), 1, 'Transfer opens zero reads');
+  h.back(); await h.settle();
+  assert.equal(h.text(), textOf(resultTree), 'Editor return retains result text');
+  assert.deepEqual(h.find('AppCapacityGauge'), gaugeBefore, 'Editor return retains measured usage/capacity/count');
+  assertAarCards(h, ['Instagram']);
+  assert.equal(requests(), 1); noWrites(); h.back();
+  h.card('링크 보기').onPress(); h.flush(); await h.settle();
+  assert.equal(requests(), 2, 'Fresh entry from Home automatically reads again'); h.dispose();
+
+  native({ status: rw(), tag: tagOf([uri(U1)]) }); h = new Harness();
+  h.dispatch({ type: 'RESET', payload: { index: 2, routes: [{ name: 'Home' }, { name: 'TagRead' }, { name: 'LinkTypeSelect' }] } });
+  await h.settle(); assert.equal(calls.supported, 0); assert.equal(requests(), 0, 'Unfocused mount cannot start');
+  h.back(); await h.settle(); assert.equal(requests(), 1, 'First actual focus starts once');
+  for (const fn of h.focusListeners.get(h.route.key) ?? []) fn();
+  await h.settle(); assert.equal(requests(), 1); noWrites(); h.dispose();
+
+  for (const config of [{ supported: false }, { supportError: true }]) {
+    h = await readTag(config);
+    assert.equal(h.find('AppInfoCard').title, 'NFC 미지원');
+    assert.equal(h.find('AppPrimaryButton').disabled, true);
+    assert.equal(requests(), 0, 'Unsupported or failed support query never opens NFC'); noWrites(); h.dispose();
+  }
+  for (const requestError of ['failed', 'cancelled', 'timeout']) {
+    h = await readTag({ requestError });
+    assert.equal(h.find('AppInfoCard').title, '읽기 실패');
+    for (const fn of h.focusListeners.get(h.route.key) ?? []) fn();
+    await h.settle(); assert.equal(requests(), 1, 'Failure/cancel/timeout does not repeat automatically');
+    cfg.requestError = undefined; cfg.tag = tagOf([uri(U1)]);
+    await h.press('태그 읽기'); await h.settle(); assert.equal(requests(), 2, 'Explicit retry opens one read');
+    noWrites(); h.dispose();
+  }
+  for (const exit of ['header', 'hardware', 'blur', 'unmount']) {
+    const supportGate = deferred(); native({ supportGate }); h = new Harness();
+    h.card('링크 보기').onPress(); h.flush();
+    const abandoned = h.editor;
+    if (exit === 'header') h.dispatch({ type: 'POP', payload: { count: 1 } });
+    else if (exit === 'hardware') h.back();
+    else if (exit === 'blur') h.dispatch({ type: 'NAVIGATE', payload: { name: 'LinkTypeSelect' } });
+    else h.dispose();
+    if (exit === 'blur') { h.back(); await h.settle(); assert.equal(requests(), 0); }
+    supportGate.resolve(); await h.settle();
+    assert.equal(requests(), 0, `${exit} during support lookup cannot start a late session`);
+    assert.ok(exit === 'blur' || !abandoned.alive); noWrites(); h.dispose();
+  }
+  for (const exit of ['header', 'hardware', 'blur', 'unmount']) {
+    const staleGate = deferred(), cleanupGate = deferred();
+    native({ tagGate: staleGate, cleanupGate, status: rw(), tag: tagOf([uri(U1)]) }); h = new Harness();
+    h.card('링크 보기').onPress(); h.flush(); await h.settle();
+    assert.equal(requests(), 1);
+    const abandoned = h.editor;
+    if (exit === 'header') h.dispatch({ type: 'POP', payload: { count: 1 } });
+    else if (exit === 'hardware') h.back();
+    else if (exit === 'blur') h.dispatch({ type: 'NAVIGATE', payload: { name: 'LinkTypeSelect' } });
+    else h.dispose();
+    await h.settle(); assert.equal(events.filter((e) => e === 'cancel').length, 1, `${exit} aborts own native request`);
+    if (exit === 'unmount') {
+      cleanupGate.resolve(); staleGate.resolve(); await h.settle(); noWrites(); continue;
+    }
+    if (exit === 'blur') { h.back(); await h.settle(); assert.equal(requests(), 1); }
+    Object.assign(cfg, { tagGate: undefined, cleanupGate: undefined, tag: tagOf([uri(U2)]), status: rw(504) });
+    if (exit === 'blur') h.press('태그 읽기');
+    else { h.card('링크 보기').onPress(); h.flush(); }
+    await h.settle(); assert.equal(requests(), 1, 'New read waits for cancelled native cleanup');
+    cleanupGate.resolve(); await h.settle(); assert.equal(requests(), 2);
+    staleGate.resolve(); await h.settle();
+    assert.ok(h.text().includes(U2) && !h.text().includes(U1), 'Late response cannot overwrite new result');
+    assert.equal(h.find('AppCapacityGauge').total, 504);
+    assert.ok(exit === 'blur' || !abandoned.alive); noWrites(); h.dispose();
+  }
+  console.log('PASS: TagRead first-focus auto read once; Home/unsupported/support failure read0; initial waiting ring; duplicate taps; editor/external return retention; explicit retries only; delayed support/native results; header/hardware/blur/unmount abort; cleanup before fresh entry');
+
   h = await readTag({ status: ro(), tag: tagOf([uri(U1)]) });
   assert.equal(h.find('AppInfoCard').title, '읽기 전용 태그');
   assert.deepEqual(h.labels(), ['수정하기', '태그 상태 확인', '다시 읽기']);
@@ -695,7 +796,7 @@ async function inspect(config) {
   // Opening ③ waits for an aborted earlier session's cleanup, then lands on [홈, ③] and reads once.
   native({ status: ro(), tag: tagOf([uri(U1)]) });
   h = new Harness(); h.card('링크 보기').onPress(); h.flush(); await h.settle();
-  await h.press('태그 읽기'); await h.settle();
+  await h.settle();
   const cleanup = deferred(), abort = new AbortController();
   Object.assign(cfg, { holdRequest: true, cleanupGate: cleanup });
   const earlier = service.readUrl(abort.signal); await h.settle(); abort.abort();      // another session still closing
@@ -712,7 +813,7 @@ async function inspect(config) {
   // Leaving ① while waiting for the cleanup cancels the jump.
   native({ status: ro(), tag: tagOf([uri(U1)]) });
   h = new Harness(); h.card('링크 보기').onPress(); h.flush(); await h.settle();
-  await h.press('태그 읽기'); await h.settle();
+  await h.settle();
   {
     const gate = deferred(), stop = new AbortController();
     Object.assign(cfg, { holdRequest: true, cleanupGate: gate });
@@ -726,7 +827,7 @@ async function inspect(config) {
   // Leaving ① while its own read is waiting cancels that native request, so ③ can open right away.
   native({ holdRequest: true, status: rw(), tag: tagOf([uri(U1)]) });
   h = new Harness(); h.card('링크 보기').onPress(); h.flush(); await h.settle();
-  h.press('태그 읽기'); await h.settle();
+  await h.settle();
   assert.ok(sessionOpen, '① is waiting in a native request');
   h.back(); await h.settle();
   assert.equal(sessionOpen, false, 'Leaving ① closes its native request'); assert.equal(events.filter((e) => e === 'cancel').length, 1);

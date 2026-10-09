@@ -309,7 +309,6 @@ const invalidCapacities = [undefined, null, 0, -1, NaN, Infinity, 1.5, '144', Nu
     readResult = { ...success(['https://a.co']), capacity };
     const reader = new Harness();
     reader.dispatch({ type: 'NAVIGATE', payload: { name: 'TagRead' } }); await reader.settle();
-    await reader.press('태그 읽기'); await reader.settle();
     const readerGauge = reader.find('AppCapacityGauge');
     assert.ok(textOf(Gauge(readerGauge)).includes('용량 확인 불가'));
     assert.equal(readerGauge.used, encodedBytes(['https://a.co'])); reader.dispose();
@@ -568,7 +567,7 @@ const invalidCapacities = [undefined, null, 0, -1, NaN, Infinity, 1.5, '144', Nu
   const labels = (host) => nodes(host.editor.tree).filter((n) => n.type === 'Text').flatMap((n) => n.props.children).filter((c) => typeof c === 'string');
   const mixed = ['https://www.notion.so/page', 'https://velog.io/@someone', 'https://www.instagram.com/Mixed_Name/'];
   readResult = success(mixed, 512); h = new Harness();
-  h.dispatch({ type: 'NAVIGATE', payload: { name: 'TagRead' } }); await h.press('태그 읽기'); await h.settle();
+  h.dispatch({ type: 'NAVIGATE', payload: { name: 'TagRead' } }); await h.settle();
   assert.deepEqual(labels(h).filter((t) => ['notion.so', 'velog.io', 'Instagram', '직접 입력'].includes(t)), ['notion.so', 'velog.io', 'Instagram'], '① labels');
   h.press('수정하기'); await h.settle();
   assert.equal(h.route.name, 'LinkEdit');
@@ -582,7 +581,7 @@ const invalidCapacities = [undefined, null, 0, -1, NaN, Infinity, 1.5, '144', Nu
 
   readResult = success(); h = new Harness();
   h.dispatch({ type: 'NAVIGATE', payload: { name: 'TagRead' } });
-  await h.press('태그 읽기'); await h.settle();
+  await h.settle();
   const beforeTransfer = reads;
   h.press('수정하기'); await h.settle();
   assert.equal(reads - beforeTransfer, 0, 'TagRead transfer starts zero reads');
@@ -640,12 +639,13 @@ const invalidCapacities = [undefined, null, 0, -1, NaN, Infinity, 1.5, '144', Nu
   h.dispose();
 
   readResult = success(); h = new Harness(); h.dispatch({ type: 'NAVIGATE', payload: { name: 'TagRead' } });
-  await h.press('태그 읽기'); await h.settle();
+  await h.settle();
   const pending = deferred(); readResult = () => pending.promise;
   const oldEdit = h.find('AppPrimaryButton', (p) => p.label === '수정하기').onPress;
   const first = h.press('다시 읽기');
   oldEdit(); // Even an already captured button must not open editing during a new read.
   assert.equal(h.route.name, 'TagRead');
+  await h.settle(); // Let the retry reach readUrl before blurring; its late result must still be ignored.
   h.dispatch({ type: 'NAVIGATE', payload: { name: 'TagInfo' } }); h.back();
   readResult = success(['https://latest-read.example'], 137);
   await h.press('태그 읽기'); await h.settle();
@@ -655,7 +655,7 @@ const invalidCapacities = [undefined, null, 0, -1, NaN, Infinity, 1.5, '144', Nu
 
   for (const reason of ['cancelled', 'failed', 'status_unknown']) {
     readResult = success(); h = new Harness(); h.dispatch({ type: 'NAVIGATE', payload: { name: 'TagRead' } });
-    await h.press('태그 읽기'); await h.settle();
+    await h.settle();
     readResult = { ok: false, reason, message: reason };
     await h.press('다시 읽기'); await h.settle();
     assert.ok(!nodes(h.editor.tree).some((n) => n.props?.label === '수정하기'));
@@ -663,7 +663,7 @@ const invalidCapacities = [undefined, null, 0, -1, NaN, Infinity, 1.5, '144', Nu
   }
   for (const result of [{ ...success(), writable: false }, { ...success(), capacity: undefined }]) {
     readResult = result; h = new Harness(); h.dispatch({ type: 'NAVIGATE', payload: { name: 'TagRead' } });
-    await h.press('태그 읽기'); await h.settle();
+    await h.settle();
     const edit = h.find('AppPrimaryButton', (p) => p.label === '수정하기');
     assert.equal(edit.disabled, true); edit.onPress(); assert.equal(h.route.name, 'TagRead'); h.dispose();
   }

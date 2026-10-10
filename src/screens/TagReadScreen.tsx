@@ -16,7 +16,7 @@ import { AppCapacityGauge } from '@/components/AppCapacityGauge';
 import { AppRingBadge } from '@/components/AppRingBadge';
 import { detectLinkTypeFromUrl } from '@/models/linkType';
 import { NfcService } from '@/nfc/nfcService';
-import { aarLabel, type AarRecord } from '@/nfc/aar';
+import { aarLabel, copyNativeRecords, type AarRecord, type NativeNdefRecord } from '@/nfc/aar';
 import { NdefSize } from '@/utils/ndefSize';
 import { hostOf } from '@/utils/urlNormalizer';
 import { linkTypeIcon } from '@/theme/icons';
@@ -31,6 +31,8 @@ interface ReadTag {
   url: string;
   /** 태그에 들어 있는 전체 링크 */
   urls: string[];
+  preservedRecords: NativeNdefRecord[];
+  preservationBlocked?: boolean;
   capacity?: number;
   writable?: boolean;
   aarRecords?: AarRecord[];
@@ -90,16 +92,19 @@ export function TagReadScreen({ navigation }: Props) {
       if (!supported) return;
       const result = await NfcService.readUrl(cancellation.signal);
       if (!mounted.current || request !== readRequest.current || !navigation.isFocused()) return;
-      setDiagnosable(result.writable === false || result.reason === 'not_ndef' || result.reason === 'status_unknown');
-      if (result.ok && result.url) {
+      setDiagnosable(result.writable === false || result.reason === 'not_ndef' || result.reason === 'status_unknown' || result.reason === 'invalid_records');
+      if ((result.url && (result.ok || result.reason === 'invalid_records')) || (result.reason === 'no_url' && result.urls?.length === 0)) {
         setTag({
-          url: result.url,
-          urls: result.urls ?? [result.url],
+          url: result.url ?? '',
+          urls: [...(result.urls ?? (result.url ? [result.url] : []))],
+          preservedRecords: copyNativeRecords(result.preservedRecords ?? []),
+          preservationBlocked: result.reason === 'invalid_records',
           capacity: result.capacity,
           writable: result.writable,
           aarRecords: result.aarRecords,
           usedBytes: result.usedBytes,
         });
+        if (!result.ok) setErrorMsg(result.message);
       } else {
         setErrorMsg(result.message);
       }
@@ -162,20 +167,21 @@ export function TagReadScreen({ navigation }: Props) {
     }
   };
 
-  const canEdit = tag?.writable === true && typeof tag.capacity === 'number' &&
+  const canEdit = !tag?.preservationBlocked && tag?.writable === true && typeof tag.capacity === 'number' &&
     Number.isSafeInteger(tag.capacity) && tag.capacity > 0;
 
   const onEditTag = () => {
     if (!tag || !canEdit || readPending.current || !navigation.isFocused()) return;
     navigation.navigate('LinkEdit', {
-      urls: tag.urls,
+      urls: [...tag.urls],
+      preservedRecords: copyNativeRecords(tag.preservedRecords),
       capacity: tag.capacity,
       writable: tag.writable,
     });
   };
 
   // 읽은 URL의 도메인으로 어디 링크인지 추론 (쓰기 때와 같은 아이콘을 보여주기 위해)
-  const linkType = tag ? detectLinkTypeFromUrl(tag.url) : undefined;
+  const linkType = tag?.url ? detectLinkTypeFromUrl(tag.url) : undefined;
 
   // AAR을 포함한 native 전체 메시지의 사용량만 표시한다.
   const bytes = tag?.usedBytes;

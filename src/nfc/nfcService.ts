@@ -12,7 +12,7 @@ import { Platform } from 'react-native';
 import NfcManager, { Ndef, NfcErrorIOS, NfcTech, NdefStatus } from 'react-native-nfc-manager';
 import type { NdefRecord } from 'react-native-nfc-manager';
 import { isValidHttpUrl } from '../utils/urlNormalizer';
-import { encodeLinkMessage, readAarRecords, type AarRecord } from './aar';
+import { copyNativeRecords, encodeNativeRecords, encodeLinkMessage, isAarRecord, readAarRecords, type AarRecord, type NativeNdefRecord } from './aar';
 
 /** feature-spec.md "4. Error Handling Specification" 의 에러 케이스 */
 export type NfcFailureReason =
@@ -22,6 +22,7 @@ export type NfcFailureReason =
   | 'read_only'        // 읽기 전용/잠긴 태그
   | 'status_unknown'   // 태그 상태/용량 확인 실패
   | 'capacity'         // 태그 용량 초과
+  | 'invalid_records' // 원본 메시지를 안전하게 보존할 수 없음
   | 'no_url'           // 태그에 URL 레코드 없음
   | 'cancelled'        // 사용자 취소 / 세션 종료
   | 'failed'           // 쓰기·읽기 중 오류, 태그 이동
@@ -31,6 +32,7 @@ export type NfcFailureReason =
 export type NfcWriteStage = 'waiting' | 'writing' | 'verifying';
 export interface NfcWriteOptions {
   androidPackage?: string;
+  preservedRecords?: NativeNdefRecord[];
   signal?: AbortSignal;
   onStage?: (stage: NfcWriteStage) => void;
 }
@@ -47,8 +49,9 @@ export interface NfcReadResult {
   ok: boolean;
   /** 첫 번째(대표) URL — 기존 호출부 호환용 */
   url?: string;
-  /** 태그에 들어 있는 모든 URL. no_url의 []는 상태 조회에 성공한 빈 NDEF 태그만 뜻한다. */
+  /** 태그에 들어 있는 모든 URL. no_url의 []도 안전하게 읽은 편집 가능한 메시지다. */
   urls?: string[];
+  preservedRecords?: NativeNdefRecord[];
   /** 태그 실제 용량(byte) — 읽어낸 경우에만 */
   capacity?: number;
   /** 쓰기 가능 여부 */
@@ -92,6 +95,7 @@ const MESSAGES: Record<NfcFailureReason, string> = {
   read_only: '이 태그는 읽기 전용이라 수정할 수 없습니다.',
   status_unknown: '태그 상태를 확인할 수 없습니다. 태그를 떼었다가 다시 대고 시도해주세요.',
   capacity: 'URL이 태그 용량보다 커서 저장할 수 없습니다. 더 짧은 URL을 쓰거나 용량이 큰 태그가 필요합니다.',
+  invalid_records: '기존 기록을 안전하게 보존할 수 없어 저장할 수 없습니다. 다시 읽거나 태그 상태를 확인해주세요.',
   no_url: '태그에서 URL을 찾지 못했습니다.',
   cancelled: 'NFC 작업이 취소되었습니다.',
   failed: '태그를 찾지 못했습니다. 휴대폰 뒷면을 태그에 다시 가까이 대주세요.',
@@ -211,49 +215,23 @@ async function getTagStatus(connectedTech: string | null | undefined): Promise<T
   return { kind: 'unknown' };
 }
 
-/** Native type=byte[]; Android id=hex 문자열, iOS id=byte[]. 모든 필드와 순서 유지. */
-function encodeNativeRecords(records: Array<Omit<NdefRecord, 'id'> & { id?: number[] | string }>) {
-  return Ndef.encodeMessage(records.map((record) => {
-    const validBytes = (value: unknown): value is number[] => Array.isArray(value) &&
-      value.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255);
-    if (!Number.isInteger(record.tnf) || record.tnf < 0 || record.tnf > 7 || !validBytes(record.payload) ||
-        (typeof record.type !== 'string' && !validBytes(record.type)) ||
-        (record.id !== undefined && typeof record.id !== 'string' && !validBytes(record.id))) {
-      throw new Error('Invalid native NDEF record');
-    }
-    const type = typeof record.type === 'string' ? record.type : Ndef.util.bytesToString(record.type);
-    // type 디코딩이 원래 바이트를 바꾸면 검증 실패로 처리한다.
-    if (typeof type !== 'string' || (Array.isArray(record.type) &&
-        Ndef.util.bytesToHexString(Ndef.util.stringToBytes(type)) !==
-        Ndef.util.bytesToHexString(record.type))) throw new Error('Invalid NDEF type');
-    const nativeId = record.id;
-    if (typeof nativeId === 'string' && !/^(?:[0-9a-f]{2})*$/i.test(nativeId)) {
-      throw new Error('Invalid NDEF id');
-    }
-    const id = typeof nativeId === 'string'
-      ? (nativeId.match(/../g) ?? []).map((byte) => parseInt(byte, 16))
-      : nativeId ?? [];
-    return { ...record, type, id };
-  }));
-}
-
 /** NDEF 레코드 배열에서 URL 추출 (URI 레코드 우선, 없으면 텍스트에서 탐색) */
-function extractUrls(records: Array<{ tnf?: number; type?: unknown; payload?: unknown }>): string[] {
+function extractUrls(records: Array<{ tnf?: number; type?: unknown; payload?: unknown }>, consumed = new Set<number>()): string[] {
   const urls: string[] = [];
 
-  const push = (u: string | null | undefined) => {
+  const push = (u: string | null | undefined, index: number) => {
     // 검증만 하고 원문을 보존한다. 기존 태그의 중복 URL도 각각 별도 레코드다.
-    if (typeof u === 'string' && isValidHttpUrl(u)) urls.push(u);
+    if (typeof u === 'string' && isValidHttpUrl(u)) { urls.push(u); consumed.add(index); }
   };
 
   // URI 레코드를 순서대로 수집 — NDEF 첫 레코드가 대표 링크다
-  for (const record of records) {
+  for (const [index, record] of records.entries()) {
     try {
       if (Ndef.isType(record as never, Ndef.TNF_WELL_KNOWN, Ndef.RTD_URI)) {
         // ndef-lib는 잘못된 UTF-8을 null 문자열로 이어붙인다 (예: https://null).
         const payload = record.payload as number[];
         decodeURIComponent(payload.slice(1).map((b) => `%${b.toString(16).padStart(2, '0')}`).join(''));
-        push(Ndef.uri.decodePayload(record.payload as never));
+        push(Ndef.uri.decodePayload(record.payload as never), index);
       }
     } catch {
       // 이 레코드는 건너뛰고 다음 레코드 확인
@@ -262,11 +240,11 @@ function extractUrls(records: Array<{ tnf?: number; type?: unknown; payload?: un
 
   // URI 레코드가 하나도 없을 때만 텍스트 레코드에서 URL을 찾는다
   if (urls.length === 0) {
-    for (const record of records) {
+    for (const [index, record] of records.entries()) {
       try {
         if (Ndef.isType(record as never, Ndef.TNF_WELL_KNOWN, Ndef.RTD_TEXT)) {
           const text = Ndef.text.decodePayload(record.payload as never);
-          if (text && /^https?:\/\//i.test(text.trim())) push(text);
+          if (text && /^https?:\/\//i.test(text.trim())) push(text, index);
         }
       } catch {
         // 무시
@@ -300,6 +278,13 @@ export const NfcService = {
     const androidPackage = Platform.OS === 'android' ? options.androidPackage : undefined;
     try {
       checkCancelled();
+      let bytes: number[];
+      try {
+        // iOS는 실측 승인 전 URI-only 유지. 보존 기록이 있으면 삭제하는 대신 차단한다.
+        if (Platform.OS !== 'android' && options.preservedRecords?.length) return fail('invalid_records');
+        bytes = encodeLinkMessage(snapshot, androidPackage, Platform.OS === 'android' ? options.preservedRecords : []);
+      } catch { return fail('invalid_records'); }
+      checkCancelled();
       onStage?.('waiting');
       const notReady = await ensureReady();
       checkCancelled();
@@ -311,9 +296,6 @@ export const NfcService = {
         if (status.kind === 'unknown') return fail('status_unknown');
         if (status.kind === 'not_ndef') return fail('not_ndef');
         if (!status.writable) return fail('read_only');
-
-        const bytes = encodeLinkMessage(snapshot, androidPackage);
-        if (!bytes) return fail('failed');
 
         // 하드코딩된 144byte 대신 태그가 알려준 실제 용량으로 검사
         if (bytes.length > status.capacity) {
@@ -371,37 +353,39 @@ export const NfcService = {
         const tag = await NfcManager.getTag();
         if (!tag) return fail('failed');
 
-        const records = tag?.ndefMessage;
-        if (!records || records.length === 0 || records.every((record) => record.tnf === Ndef.TNF_EMPTY)) {
-          // 기존 읽기 화면의 no_url 처리를 유지하면서 편집은 빈 태그로 시작할 수 있다.
-          return {
-            ...fail('no_url'),
-            urls: [],
-            capacity: status.capacity,
-            writable: status.writable,
-          };
+        // 무메시지 필드만 빈 태그로 취급한다. 잘못된 배열/필드는 빈 태그로 덮어쓰지 않는다.
+        const nativeRecords = tag.ndefMessage ?? [];
+        let records: NativeNdefRecord[];
+        let usedBytes: number;
+        try {
+          records = copyNativeRecords(nativeRecords);
+          usedBytes = encodeNativeRecords(records).length;
+        } catch {
+          const urls = Array.isArray(nativeRecords) ? extractUrls(nativeRecords as never) : [];
+          // 조회/링크 열기는 유지하되 이 결과로 편집 저장을 시작하지 않는다.
+          return { ...fail('invalid_records'), url: urls[0], urls, capacity: status.capacity,
+            writable: status.writable, aarRecords: Array.isArray(nativeRecords) ? readAarRecords(nativeRecords) : undefined };
         }
-
-        const urls = extractUrls(records as never);
+        const consumed = new Set<number>();
+        const urls = extractUrls(records, consumed);
         const url = urls[0];
-        if (!url) {
-          return { ok: false, reason: 'no_url' as const, message: MESSAGES.no_url };
-        }
+        const preservedRecords = records.filter((record, index) => !consumed.has(index) && !isAarRecord(record));
 
+        if (Platform.OS === 'ios' && preservedRecords.some((record) => record.tnf !== Ndef.TNF_EMPTY)) {
+          return { ...fail('invalid_records'), url, urls, capacity: status.capacity, writable: status.writable,
+            aarRecords: readAarRecords(records), usedBytes };
+        }
         if (Platform.OS === 'ios') {
           await NfcManager.setAlertMessage('읽기 완료').catch(() => {});
         }
 
-        let usedBytes: number | undefined;
-        try { usedBytes = encodeNativeRecords(records as never).length; } catch { /* 조회값을 추정하지 않는다. */ }
-
         return {
-          ok: true,
+          ...(url ? { ok: true, message: '태그를 읽었습니다.' } : fail('no_url')),
           url,
           urls,
+          preservedRecords: Platform.OS === 'android' ? preservedRecords : [],
           capacity: status.capacity,
           writable: status.writable,
-          message: '태그를 읽었습니다.',
           aarRecords: readAarRecords(records),
           usedBytes,
         };

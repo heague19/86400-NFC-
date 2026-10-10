@@ -151,7 +151,8 @@ async function run(settings = {}, read = false, urls = ['https://example.com'], 
     false, aarUrls)).reason, 'verify_mismatch', 'Unexpected AAR when off must fail verification');
   assert.equal((await run({}, false, aarUrls)).ok, true);
   assert.equal(Ndef.decodeMessage(written).length, aarUrls.length, 'Off is a whole rewrite with no AAR');
-  assert.equal((await run({}, false, aarUrls, { androidPackage: 'arbitrary.pkg' })).ok, false);
+  options = {}; events = [];
+  assert.equal((await NfcService.writeUrls(aarUrls, { androidPackage: 'arbitrary.pkg' })).reason, 'invalid_records');
   assert.equal(events.includes('write'), false, 'Arbitrary package rejected before native write');
   const unknownRecord = Ndef.androidApplicationRecord('org.example.unknown');
   const unknown = await run({ records: toNative([Ndef.uriRecord(aarUrls[0]), unknownRecord]) }, true);
@@ -159,12 +160,105 @@ async function run(settings = {}, read = false, urls = ['https://example.com'], 
   assert.equal(aar.aarLabel(unknown.aarRecords[0]), 'org.example.unknown');
   const brokenRead = await run({ records: [toNative([Ndef.uriRecord(aarUrls[0])])[0],
     { ...toNative([unknownRecord])[0], id: 'zz' }] }, true);
-  assert.equal(brokenRead.ok, true); assert.equal(brokenRead.usedBytes, undefined);
-  assert.deepEqual(brokenRead.urls, [aarUrls[0]], 'Unserializable AAR keeps URL opening/copy data');
+  assert.equal(brokenRead.reason, 'invalid_records');
+  assert.deepEqual(brokenRead.urls, [aarUrls[0]], 'Read-only URL data remains available but reason blocks editing');
   const malformedAar = await run({ records: [toNative([Ndef.uriRecord(aarUrls[0])])[0],
     { ...toNative([unknownRecord])[0], payload: [255] }] }, true);
   assert.deepEqual(malformedAar.aarRecords, [{}]); assert.equal(aar.aarLabel(malformedAar.aarRecords[0]), '패키지 확인 불가');
   console.log('PASS: AAR native on/off, URI order/raw duplicates, max one last, six actual byte sizes 39/36/38/37/42/44, exact capacity boundaries, wrong native type/package/position/count/id/payload rejected, unknown package visible, unusable native message has unknown bytes');
+
+  // A5: classify by consumed record index, then preserve every other original byte field.
+  const preserved = [Ndef.textRecord('memo', 'en', [0, 255, 16]),
+    Ndef.mimeMediaRecord('application/octet-stream', [0, 255, 128, 1]),
+    Ndef.uriRecord('mailto:Mixed@Example.com'),
+    Ndef.record(Ndef.TNF_EXTERNAL_TYPE, 'example.com:opaque', [16, 0, 255], [255, 0, 128]),
+    Ndef.record(Ndef.TNF_UNKNOWN, '', [255], [0, 255]),
+    Ndef.textRecord('https://text.example/Keep?flag'),
+    Ndef.textRecord('memo', 'en', [0, 255, 16])];
+  const mixedUrls = ['HTTPS://Example.COM/A%2fb?flag#Keep', 'https://dup.example', 'https://dup.example'];
+  const nativeMixed = structuredClone(toNative([preserved[0], Ndef.uriRecord(mixedUrls[0]), preserved[1],
+    Ndef.uriRecord(mixedUrls[1]), ...preserved.slice(2), Ndef.uriRecord(mixedUrls[2]),
+    Ndef.androidApplicationRecord('org.old.one'), Ndef.androidApplicationRecord('org.old.two')]));
+  const mixedRead = await run({ records: nativeMixed }, true);
+  assert.deepEqual(mixedRead.urls, mixedUrls);
+  assert.deepEqual(encodeNativeRecords(mixedRead.preservedRecords), Ndef.encodeMessage(preserved));
+  assert.equal(mixedRead.usedBytes, encodeNativeRecords(nativeMixed).length);
+  // Mutating native fields after reading cannot corrupt the editor's copy.
+  nativeMixed[0].type[0] = 0; nativeMixed[0].payload[0] = 255; nativeMixed[0].id = 'ffff';
+  assert.deepEqual(encodeNativeRecords(mixedRead.preservedRecords), Ndef.encodeMessage(preserved));
+  for (const androidPackage of [undefined, 'com.instagram.android']) {
+    const edited = [mixedUrls[2], 'https://edited.example'];
+    const expectedRecords = [...edited.map((u) => Ndef.uriRecord(u)), ...preserved,
+      ...(androidPackage ? [Ndef.androidApplicationRecord(androidPackage)] : [])];
+    const expected = Ndef.encodeMessage(expectedRecords);
+    for (const capacity of [expected.length - 1, expected.length, expected.length + 1]) {
+      const result = await run({ status: { status: 2, capacity } }, false, edited,
+        { androidPackage, preservedRecords: mixedRead.preservedRecords });
+      assert.equal(result.ok, capacity >= expected.length, 'Capacity includes every preserved record and selected AAR');
+      if (result.ok) { assert.deepEqual(written, expected); assert.equal(result.usedBytes, expected.length); }
+      else { assert.equal(result.reason, 'capacity'); assert.equal(events.includes('write'), false); }
+    }
+  }
+  const nonUrlOnly = await run({ records: toNative(preserved.filter((_, i) => i !== 5)) }, true);
+  assert.equal(nonUrlOnly.reason, 'no_url'); assert.deepEqual(nonUrlOnly.urls, []);
+  assert.equal(nonUrlOnly.writable, true); assert.equal(nonUrlOnly.capacity, 512);
+  assert.deepEqual(encodeNativeRecords(nonUrlOnly.preservedRecords),
+    Ndef.encodeMessage(preserved.filter((_, i) => i !== 5)));
+  const fallbackUrls = ['https://fallback.example/Keep?flag', 'https://fallback.example/Keep?flag'];
+  const fallback = await run({ records: toNative([Ndef.textRecord('memo'),
+    ...fallbackUrls.map((u) => Ndef.textRecord(u)), Ndef.uriRecord('tel:+123')]) }, true);
+  assert.deepEqual(fallback.urls, fallbackUrls);
+  assert.deepEqual(encodeNativeRecords(fallback.preservedRecords),
+    Ndef.encodeMessage([Ndef.textRecord('memo'), Ndef.uriRecord('tel:+123')]));
+  assert.equal((await run({}, false, ['https://replacement.example'], { preservedRecords: fallback.preservedRecords })).ok, true);
+  assert.deepEqual(Ndef.decodeMessage(written).map((r) => r.type), ['U', 'T', 'U']);
+  assert.equal(Ndef.decodeMessage(written).some((r) => r.payload.includes('fallback'.charCodeAt(0)) &&
+    r.type === 'T'), false, 'Deleted fallback URL text cannot return via preserved records');
+  // Caller-supplied stale AARs are filtered again at the shared serializer boundary.
+  assert.deepEqual(aar.encodeLinkMessage(['https://a.co'], 'com.instagram.android',
+    [...preserved, ...toNative([Ndef.androidApplicationRecord('org.old.one'), Ndef.androidApplicationRecord('org.old.two')])]),
+    Ndef.encodeMessage([Ndef.uriRecord('https://a.co'), ...preserved, Ndef.androidApplicationRecord('com.instagram.android')]));
+  const invalidRecords = [null, { tnf: 7, type: 'T', id: [], payload: [] },
+    { tnf: 6, type: '', id: [], payload: [] }, { tnf: 0, type: 'T', id: [], payload: [] },
+    { tnf: 5, type: 'T', id: [], payload: [] }, { tnf: 2, type: '', id: [], payload: [] },
+    { ...preserved[0], id: '0' }, { ...preserved[0], id: 'zz' },
+    { ...preserved[0], type: [255] }, { ...preserved[0], type: 'a'.repeat(256) },
+    { ...preserved[0], id: Array(256).fill(0) }, { ...preserved[0], payload: [NaN] },
+    { ...preserved[0], payload: [-1] }, { ...preserved[0], payload: [256] },
+    { ...preserved[0], payload: Array(1) }, { ...preserved[0], payload: Array(65536).fill(0) }];
+  for (const record of invalidRecords) {
+    const read = await run({ records: [toNative([Ndef.uriRecord('https://a.co')])[0], record] }, true);
+    assert.equal(read.reason, 'invalid_records'); assert.equal(read.preservedRecords, undefined);
+    options = {}; events = [];
+    assert.equal((await NfcService.writeUrls(['https://a.co'], { preservedRecords: [record] })).reason, 'invalid_records');
+    assert.equal(events.includes('write'), false, 'Unsafe source data is never saved after dropping records');
+  }
+  for (const length of [254, 255, 256, 512, 65535]) {
+    const record = { tnf: 2, type: 'application/octet-stream', id: [0, 255], payload: Array(length).fill(255) };
+    assert.deepEqual(encodeNativeRecords(toNative([record])), Ndef.encodeMessage([record]));
+  }
+  for (const transform of [
+    (r) => r.filter((_, i) => i !== mixedUrls.length),
+    (r) => [...r, r[mixedUrls.length]],
+    (r) => { [r[3], r[4]] = [r[4], r[3]]; return r; },
+    (r) => r.map((v, i) => i === 3 ? { ...v, id: 'ff00' } : v),
+    (r) => r.map((v, i) => i === 3 ? { ...v, payload: [...v.payload, 0] } : v),
+    (r) => r.map((v, i) => i === 3 ? { ...v, type: [88] } : v),
+    (r) => r.map((v, i) => i === 3 ? { ...v, tnf: 2 } : v),
+  ]) assert.equal((await run({ transform }, false, mixedUrls, { preservedRecords: mixedRead.preservedRecords })).reason,
+    'verify_mismatch', 'URL match alone cannot certify preserved bytes or their order');
+  let releaseSnapshot;
+  options = { requestGate: { promise: new Promise((r) => { releaseSnapshot = r; }) } }; events = [];
+  const mutablePreserved = structuredClone(toNative(preserved));
+  const mutableWriteOptions = { preservedRecords: mutablePreserved };
+  const fullSnapshot = NfcService.writeUrls(mixedUrls, mutableWriteOptions);
+  await new Promise(setImmediate);
+  mutablePreserved.reverse(); mutablePreserved[0].payload.fill(0); mutablePreserved[0].type[0] = 0;
+  mutableWriteOptions.preservedRecords = [];
+  releaseSnapshot();
+  assert.equal((await fullSnapshot).ok, true);
+  assert.deepEqual(written, Ndef.encodeMessage([...mixedUrls.map((u) => Ndef.uriRecord(u)), ...preserved]));
+  console.log('PASS: A5 native mixed/non-URL/fallback selection, raw fields/hex IDs/duplicates/AAR replacement, complete capacity boundaries, malformed rejection, payload 254..65535, full-field/order verification, pending deep snapshot');
 
   const records = [Ndef.uriRecord('https://example.com', [0, 255, 16]), Ndef.uriRecord('https://example.com')];
   assert.deepEqual(encodeNativeRecords(toNative(records)), Ndef.encodeMessage(records));
@@ -248,6 +342,7 @@ async function run(settings = {}, read = false, urls = ['https://example.com'], 
       assert.deepEqual(empty.urls, []);
       assert.equal(empty.capacity, 137);
       assert.equal(empty.writable, writable);
+      assert.deepEqual(encodeNativeRecords(empty.preservedRecords), encodeNativeRecords(records), 'Valid EMPTY fields are also preserved');
     }
   }
   const missing = await run({ tagNull: true }, true);
@@ -258,7 +353,8 @@ async function run(settings = {}, read = false, urls = ['https://example.com'], 
   assert.equal(missing.writable, undefined);
   const invalid = await run({ records: [malformed] }, true);
   assert.equal(invalid.reason, 'no_url');
-  assert.equal(invalid.urls, undefined, 'Invalid nonempty records must not masquerade as a blank tag');
+  assert.deepEqual(invalid.urls, []);
+  assert.equal(invalid.preservedRecords.length, 1, 'Unextracted URI payload is preserved as bytes, not a blank tag');
   for (const [settings, reason] of [
     [{ supported: false }, 'unsupported'], [{ enabled: false }, 'disabled'], [{ supportError: true }, 'failed'],
   ]) {
@@ -320,6 +416,13 @@ async function run(settings = {}, read = false, urls = ['https://example.com'], 
   const iosResult = await run({}, false, ['https://example.com'], { androidPackage: 'com.instagram.android' });
   assert.equal(iosResult.ok, true); assert.equal(iosResult.androidPackage, undefined);
   assert.equal(Ndef.decodeMessage(written).length, 1, 'iOS retains its existing URL-only write');
+  options = {}; events = [];
+  assert.equal((await NfcService.writeUrls(['https://example.com'], { preservedRecords: [Ndef.textRecord('memo')] })).reason,
+    'invalid_records', 'iOS URI-only scope cannot silently discard a preservation request');
+  assert.equal(events.includes('write'), false);
+  const iosMixed = await run({ records: toNative([Ndef.uriRecord('https://example.com'), Ndef.textRecord('memo')]) }, true);
+  assert.equal(iosMixed.reason, 'invalid_records');
+  assert.deepEqual(iosMixed.urls, ['https://example.com'], 'iOS keeps link viewing while mixed editing awaits separate approval');
   Platform.OS = 'android';
   options = { supportError: true }; events = [];
   assert.equal((await NfcService.writeUrls(original)).reason, 'failed', 'Readiness rejection returns a failure result');

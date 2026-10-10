@@ -1,5 +1,5 @@
 import { Ndef } from 'react-native-nfc-manager';
-import { encodeLinkMessage } from '../nfc/aar';
+import { encodeLinkMessage, type NativeNdefRecord } from '../nfc/aar';
 
 export const NdefSize = {
   /** 조회한 NDEF 메시지 용량만 사용한다. 불명·0·잘못된 값은 분모가 될 수 없다. */
@@ -12,9 +12,9 @@ export const NdefSize = {
     return this.estimateMessageBytes([url]);
   },
 
-  /** 빈 목록은 0 B, 나머지는 전체 NDEF 메시지를 실제 직렬화한다. */
-  estimateMessageBytes(urls: string[], androidPackage?: string): number {
-    return encodeLinkMessage(urls, androidPackage).length;
+  /** URL·보존 기록·AAR를 포함한 전체 메시지를 실제 직렬화한다. 전부 비면 0 B. */
+  estimateMessageBytes(urls: string[], androidPackage?: string, preservedRecords: NativeNdefRecord[] = []): number {
+    return encodeLinkMessage(urls, androidPackage, preservedRecords).length;
   },
 
   aarBytes(androidPackage: string): number {
@@ -22,7 +22,9 @@ export const NdefSize = {
   },
 
   /** 용량을 모르면 저장 가능하다고 판단하지 않는다. */
-  canStoreAll(urls: string[], capacity: unknown, androidPackage?: string): boolean {
-    return this.isValidCapacity(capacity) && this.estimateMessageBytes(urls, androidPackage) <= capacity;
+  canStoreAll(urls: string[], capacity: unknown, androidPackage?: string, preservedRecords: NativeNdefRecord[] = []): boolean {
+    try {
+      return this.isValidCapacity(capacity) && this.estimateMessageBytes(urls, androidPackage, preservedRecords) <= capacity;
+    } catch { return false; }
   },
 };

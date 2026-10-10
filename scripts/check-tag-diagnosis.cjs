@@ -154,7 +154,7 @@ const { NfcService: service } = load('src/nfc/nfcService.ts', {
 
 // ---------- screens ----------
 const state = load('src/state/LinkWriterContext.tsx', {
-  react: React, 'react-native': { Platform }, '@/models/linkType': model, '@/utils/ndefSize': size, '@/utils/urlNormalizer': normalizer,
+  react: React, 'react-native': { Platform }, '@/models/linkType': model, '@/utils/ndefSize': size, '@/utils/urlNormalizer': normalizer, '@/nfc/aar': aarModule,
 });
 const warnings = load('src/utils/linkWarnings.ts', { '@/utils/urlNormalizer': normalizer });
 const tokens = load('src/theme/tokens.ts', {});
@@ -559,7 +559,9 @@ async function inspect(config) {
     assert.equal(h.has('AppCapacityGauge'), false, 'Unreadable native whole-message never falls back to URL bytes');
     assert.ok(h.text().includes('사용량 확인 불가')); assert.ok(h.text().includes(U1));
     assertAarCards(h, [expectedLabel]);
-    assert.ok(h.has('Pressable', (p) => p.onPress && p.onLongPress), 'Original URL open/copy remains available'); h.dispose();
+    assert.ok(h.has('Pressable', (p) => p.onPress && p.onLongPress), 'Original URL open/copy remains available');
+    assert.equal(h.find('AppPrimaryButton', (p) => p.label === '수정하기').disabled, true, 'Unsafe records block editing');
+    assert.ok(h.find('AppInfoCard', (p) => p.message?.includes('안전하게 보존'))); h.dispose();
   }
   for (const [extraRecords, labels] of [
     [[], []],
@@ -700,7 +702,7 @@ async function inspect(config) {
   for (const fn of h.focusListeners.get(h.route.key) ?? []) fn();
   await h.settle(); assert.equal(requests(), 1, 'External app return does not reread');
   h.press('수정하기'); await h.settle();
-  assert.deepEqual(h.route.params, { urls: [U1, U2, U1], capacity: 504, writable: true });
+  assert.deepEqual(h.route.params, { urls: [U1, U2, U1], preservedRecords: [], capacity: 504, writable: true });
   assert.equal(requests(), 1, 'Transfer opens zero reads');
   h.back(); await h.settle();
   assert.equal(h.text(), textOf(resultTree), 'Editor return retains result text');

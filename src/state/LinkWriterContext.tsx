@@ -9,6 +9,7 @@ import { Platform } from 'react-native';
 
 import type { LinkType, UrlDraft } from '@/models/linkType';
 import { CUSTOM_LINK_TYPE, detectLinkTypeFromUrl } from '@/models/linkType';
+import { copyNativeRecords, isAarRecord, type NativeNdefRecord } from '@/nfc/aar';
 import { NdefSize } from '@/utils/ndefSize';
 import { extractPresetHandle } from '@/utils/urlNormalizer';
 
@@ -23,6 +24,7 @@ const rowId = () => `link-${++nextRowId}`;
 interface LinkWriterContextValue {
   /** 태그에 쓸 링크 목록. 0번이 항상 대표(대표 개념 없는 "빈 목록" 상태만 예외). */
   links: WriterLink[];
+  preservedRecords: NativeNdefRecord[];
   aarEnabled: boolean;
   primaryRevision: number;
   /** 고지 당시 대표 객체와 지금 대표가 같을 때만 켠다. */
@@ -31,7 +33,7 @@ interface LinkWriterContextValue {
   /** 현재 편집 중인 태그에서 조회한 실제 용량. 입력 화면에 다녀와도 유지한다. */
   capacity: number | undefined;
   /** 새 태그의 전체 URL로 교체. 읽은 문자열과 순서, 중복을 그대로 보존한다. */
-  replaceFromTag: (urls: string[], capacity: number) => void;
+  replaceFromTag: (urls: string[], capacity: number, preservedRecords?: NativeNdefRecord[]) => void;
   /** LinkTypeSelect에서 고른 프리셋 — 계정명/URL 입력 화면이 이걸 참조 (신규 추가 시에만 의미 있음) */
   selectedLinkType: LinkType | null;
   selectLinkType: (linkType: LinkType) => void;
@@ -66,10 +68,12 @@ export function LinkWriterProvider({ children }: { children: React.ReactNode }) 
     setWriter((prev) => Platform.OS === 'android' && prev.primaryRevision === revision && prev.links[0] === primary && primary.linkType.androidPackage
       ? { ...prev, aarEnabled: true } : prev);
   }, []);
+  const [preservedRecords, setPreservedRecords] = useState<NativeNdefRecord[]>([]);
   const [capacity, setCapacity] = useState<number | undefined>(undefined);
   const [selectedLinkType, setSelectedLinkType] = useState<LinkType | null>(null);
 
-  const replaceFromTag = useCallback((urls: string[], tagCapacity: number) => {
+  const replaceFromTag = useCallback((urls: string[], tagCapacity: number, records: NativeNdefRecord[] = []) => {
+    const preserved = copyNativeRecords(records).filter((record) => !isAarRecord(record));
     setLinks(urls.map((url) => {
       // 도메인만 같다고 프리셋으로 분류하지 않는다 — github.com/org/repo, youtube.com/watch?v=… 같은 URL을
       // 계정명 화면으로 열면 엉뚱한 URL이 조립된다. 계정 페이지가 아니면 기타로 둔다. 문자열·순서는 그대로.
@@ -84,9 +88,11 @@ export function LinkWriterProvider({ children }: { children: React.ReactNode }) 
         fromTag: true,
       };
     }));
+    setPreservedRecords(preserved);
+    disableAar();
     setCapacity(tagCapacity);
     setSelectedLinkType(null);
-  }, [setLinks]);
+  }, [setLinks, disableAar]);
 
   const selectLinkType = useCallback((linkType: LinkType) => {
     setSelectedLinkType(linkType);
@@ -136,6 +142,7 @@ export function LinkWriterProvider({ children }: { children: React.ReactNode }) 
 
   const clear = useCallback(() => {
     setLinks([]);
+    setPreservedRecords([]);
     setCapacity(undefined);
     setSelectedLinkType(null);
     disableAar();
@@ -144,6 +151,7 @@ export function LinkWriterProvider({ children }: { children: React.ReactNode }) 
   const value = useMemo<LinkWriterContextValue>(
     () => ({
       links,
+      preservedRecords,
       aarEnabled,
       primaryRevision,
       enableAar,
@@ -159,7 +167,7 @@ export function LinkWriterProvider({ children }: { children: React.ReactNode }) 
       reorder,
       clear,
     }),
-    [links, aarEnabled, primaryRevision, enableAar, disableAar, capacity, replaceFromTag, selectedLinkType, selectLinkType, addLink, updateLink, removeLink, setPrimary, reorder, clear]
+    [links, preservedRecords, aarEnabled, primaryRevision, enableAar, disableAar, capacity, replaceFromTag, selectedLinkType, selectLinkType, addLink, updateLink, removeLink, setPrimary, reorder, clear]
   );
 
   return <LinkWriterContext.Provider value={value}>{children}</LinkWriterContext.Provider>;

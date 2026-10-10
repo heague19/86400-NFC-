@@ -84,7 +84,7 @@ const aar = load('src/nfc/aar.ts', { 'react-native-nfc-manager': { Ndef: require
 const size = load('src/utils/ndefSize.ts', { 'react-native-nfc-manager': { Ndef: require('react-native-nfc-manager/ndef-lib') }, '../nfc/aar': aar });
 const normalizer = load('src/utils/urlNormalizer.ts', {});
 const state = load('src/state/LinkWriterContext.tsx', {
-  react: React, 'react-native': { Platform: { OS: 'android' } }, '@/models/linkType': model, '@/utils/ndefSize': size, '@/utils/urlNormalizer': normalizer,
+  react: React, 'react-native': { Platform: { OS: 'android' } }, '@/models/linkType': model, '@/utils/ndefSize': size, '@/utils/urlNormalizer': normalizer, '@/nfc/aar': aar,
 });
 const warnings = load('src/utils/linkWarnings.ts', { '@/utils/urlNormalizer': normalizer });
 const tokens = load('src/theme/tokens.ts', {});
@@ -585,7 +585,7 @@ const invalidCapacities = [undefined, null, 0, -1, NaN, Infinity, 1.5, '144', Nu
   const beforeTransfer = reads;
   h.press('수정하기'); await h.settle();
   assert.equal(reads - beforeTransfer, 0, 'TagRead transfer starts zero reads');
-  assert.deepEqual(h.route.params, { urls, capacity: 512, writable: true });
+  assert.deepEqual(h.route.params, { urls, preservedRecords: [], capacity: 512, writable: true });
   assert.deepEqual(contextUrls(h), urls);
   const suppliedParams = h.route.params;
   h.find('Pressable', (p) => nodes(p.children).some((n) => n.type === 'Text' && n.props.children.includes(urls[0]))).onPress(); h.flush();
@@ -844,6 +844,104 @@ const invalidCapacities = [undefined, null, 0, -1, NaN, Infinity, 1.5, '144', Nu
   }).NfcService;
   readResult = (signal) => actualService.readUrl(signal);
   writeResult = (urls, opts) => actualService.writeUrls(urls, opts);
+  // A5: actual native service -> both entry routes -> provider/input -> failed whole rewrite/continuation.
+  const a5Url = 'https://source.example/Keep?flag#Case';
+  const a5Memo = Ndef.textRecord('memo', 'en', [0, 255]);
+  const a5Mime = Ndef.mimeMediaRecord('application/octet-stream', [0, 255, 128]);
+  const a5OtherUri = Ndef.uriRecord('mailto:Mixed@Example.com');
+  const a5OldAars = [Ndef.androidApplicationRecord('org.old.one'), Ndef.androidApplicationRecord('org.old.two')];
+  for (const pathName of ['direct', 'view']) {
+    for (const [kind, originalRecords, originalUrls, preserved] of [
+      ['mixed', [a5Memo, Ndef.uriRecord(a5Url), a5Mime, Ndef.textRecord(a5Url), a5OtherUri,
+        Ndef.uriRecord(a5Url), ...a5OldAars], [a5Url, a5Url], [a5Memo, a5Mime, Ndef.textRecord(a5Url), a5OtherUri]],
+      ['non-URL', [a5Memo, a5Mime, a5OtherUri, ...a5OldAars], [], [a5Memo, a5Mime, a5OtherUri]],
+      ['fallback', [a5Memo, Ndef.textRecord(a5Url), a5Mime, Ndef.textRecord(a5Url), a5OtherUri, ...a5OldAars],
+        [a5Url, a5Url], [a5Memo, a5Mime, a5OtherUri]],
+    ]) {
+      nativeCapacity = 512;
+      nativeTag = { ndefMessage: structuredClone(originalRecords.map((r) => ({ ...r,
+        type: Ndef.util.stringToBytes(r.type), id: Ndef.util.bytesToHexString(r.id) }))) };
+      h = new Harness();
+      if (pathName === 'direct') h.enterEdit();
+      else h.find('AppActionCard', (p) => p.title === '링크 보기').onPress();
+      h.flush(); await h.settle();
+      if (pathName === 'view') {
+        if (!originalUrls.length) assert.ok(h.find('AppInfoCard', (p) => p.message?.includes('URL을 찾지 못')),
+          'Link view retains no_url guidance for non-URL-only tags');
+        const before = reads; h.press('수정하기'); await h.settle(); assert.equal(reads, before);
+      }
+      const retainedKey = h.route.key, entryReads = reads;
+      assert.deepEqual(contextUrls(h), originalUrls, `${pathName}/${kind}: URL order/duplicates`);
+      assert.equal(h.context.aarEnabled, false);
+      const preservedBytes = Ndef.encodeMessage(preserved);
+      assert.deepEqual(aar.encodeNativeRecords(h.context.preservedRecords), preservedBytes);
+      assert.equal(h.find('AppCapacityGauge').used, aar.encodeLinkMessage(originalUrls, undefined, preserved).length);
+      assert.equal(h.find('AppCapacityGauge').linkCount, originalUrls.length);
+      // Native and route arrays remain external to provider-owned bytes.
+      nativeTag.ndefMessage[0].payload[0] ^= 1;
+      if (h.route.params) h.route.params.preservedRecords[0].payload[0] ^= 1;
+      assert.deepEqual(aar.encodeNativeRecords(h.context.preservedRecords), preservedBytes);
+      if (!originalUrls.length) assert.equal(h.find('AppPrimaryButton', (p) => p.label === '저장').disabled, true);
+      addPreset(h, '직접 입력', 'https://added.example/Keep'); h.press('다음');
+      assert.equal(h.route.key, retainedKey); assert.equal(reads, entryReads);
+      assert.deepEqual(aar.encodeNativeRecords(h.context.preservedRecords), preservedBytes);
+      h.find('Pressable', (p) => nodes(p.children).some((n) => n.type === 'Text' &&
+        n.props.children.includes('https://added.example/Keep'))).onPress(); h.flush();
+      h.find('AppTextField').onChangeText('https://updated.example/Keep'); h.flush(); h.press('다음');
+      if (originalUrls.length) { h.context.removeLink(0); h.flush(); }
+      const editedUrls = [...contextUrls(h)];
+      const expectedWrite = aar.encodeLinkMessage(editedUrls, undefined, preserved);
+      assert.equal(h.find('AppCapacityGauge').used, expectedWrite.length);
+      assert.equal(h.find('AppPrimaryButton', (p) => p.label === '저장').disabled, false);
+      nativeWriteGate = deferred(); nativeMismatch = true;
+      const pending = h.press('저장'); await h.settle();
+      h.context.preservedRecords[0].payload[0] ^= 1;
+      nativeWriteGate.resolve(); nativeWriteGate = undefined;
+      await pending; await h.settle();
+      assert.deepEqual(nativeWriteMessages.at(-1), expectedWrite, 'Pending native write owns a complete deep snapshot');
+      assert.ok(h.find(imports['@/screens/WriteFailureScreen'].WriteFailureScreen));
+      nativeMismatch = false;
+      await h.press('전체 재쓰기'); await h.settle();
+      assert.equal(h.route.name, 'WriteComplete');
+      assert.deepEqual(nativeWriteMessages.at(-1), expectedWrite, 'Whole rewrite retains failed non-URL bytes despite external changes');
+      assert.equal(h.route.params.usedBytes, expectedWrite.length);
+      assert.equal(h.route.params.urls.length, editedUrls.length, 'Non-URLs never inflate completed link count');
+      // Restore intentionally mutated public state, then exercise ordinary continuation.
+      h.context.preservedRecords[0].payload[0] ^= 1;
+      h.press('링크 더 추가하기');
+      h.find('AppActionCard', (p) => p.title === '직접 입력').onPress(); h.flush();
+      h.find('AppTextField').onChangeText('https://continued.example/Keep'); h.flush(); h.press('다음');
+      assert.equal(h.route.key, retainedKey); assert.equal(reads, entryReads);
+      assert.deepEqual(aar.encodeNativeRecords(h.context.preservedRecords), preservedBytes);
+      await h.press('저장'); await h.settle();
+      assert.deepEqual(nativeWriteMessages.at(-1), aar.encodeLinkMessage([...editedUrls, 'https://continued.example/Keep'], undefined, preserved));
+      h.press('완료'); nativeTag = { ndefMessage: [] }; h.enterEdit(); await h.settle();
+      assert.deepEqual(h.context.preservedRecords, []); assert.deepEqual(contextUrls(h), []);
+      h.context.replaceFromTag(['https://a.co'], 512, structuredClone(preserved)); h.flush();
+      h.context.clear(); h.flush(); assert.deepEqual(h.context.preservedRecords, []);
+      h.dispose();
+    }
+  }
+  // Entire-message overflow reaches the actual save handler before opening any native write session.
+  nativeTag = { ndefMessage: [Ndef.uriRecord('https://a.co'), a5Memo, a5Mime] };
+  nativeCapacity = aar.encodeLinkMessage(['https://a.co'], undefined, [a5Memo, a5Mime]).length - 1;
+  h = new Harness(); h.enterEdit(); await h.settle();
+  assert.equal(h.find('AppPrimaryButton', (p) => p.label === '저장').disabled, true);
+  const a5Requests = nativeRequests, a5WriteCount = nativeWriteMessages.length;
+  await h.find('AppPrimaryButton', (p) => p.label === '저장').onPress(); await h.settle();
+  assert.equal(nativeRequests, a5Requests); assert.equal(nativeWriteMessages.length, a5WriteCount); h.dispose();
+  // Bad source records and bad route params block editing instead of defaulting to an empty preserve list.
+  nativeCapacity = 512;
+  nativeTag = { ndefMessage: [Ndef.uriRecord('https://a.co'), { ...a5Memo, id: 'bad-hex' }] };
+  h = new Harness(); h.enterEdit(); await h.settle();
+  assert.ok(h.find('AppSecondaryButton', (p) => p.label === '태그 상태 확인'));
+  assert.equal(nodes(h.editor.tree).some((n) => n.props?.label === '저장'), false); h.dispose();
+  h = new Harness(); h.dispatch({ type: 'NAVIGATE', payload: { name: 'LinkEdit', params:
+    { urls: ['https://a.co'], capacity: 512, writable: true, preservedRecords: [{ ...a5Memo, payload: [NaN] }] } } });
+  await h.settle(); assert.equal(nodes(h.editor.tree).some((n) => n.props?.label === '저장'), false);
+  assert.deepEqual(h.context.preservedRecords, []); h.dispose();
+  console.log('PASS: A5 actual native service/provider/screens: both routes x mixed/non-URL/fallback, deep source/route copies, input retention, URL edit/delete, original record gauge/capacity/link count, failed full rewrite snapshot, completed bytes/continuation, new tag/clear reset, unsafe data/save blocking');
+
   // Android 6-1..7: actual screen handlers/provider/service, only native NFC and view mounting mocked.
   const screenText = (host) => nodes(host.editor.tree).filter((n) => n.type === 'Text').flatMap((n) => n.props.children).join(' ');
   const openNotice = (host) => { host.find('Switch').onValueChange(true); host.flush(); return host.find('Modal'); };
@@ -978,6 +1076,7 @@ const invalidCapacities = [undefined, null, 0, -1, NaN, Infinity, 1.5, '144', Nu
     nativeTag = { ndefMessage: records };
     h = new Harness(); h.context.replaceFromTag(urls, 512); h.flush(); h.enterEdit(); await h.settle();
     assert.deepEqual(contextUrls(h), [], 'Confirmed empty tag replaces previous links');
+    assert.deepEqual(aar.encodeNativeRecords(h.context.preservedRecords), aar.encodeNativeRecords(records), 'EMPTY records retain their actual fields without previous-tag data');
     assert.equal(h.context.capacity, 137);
     assert.equal(h.find('AppPrimaryButton', (p) => p.label === '저장').disabled, true);
     const closed = nativeCancels;

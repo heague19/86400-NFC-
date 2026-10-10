@@ -19,6 +19,7 @@ import { CUSTOM_LINK_TYPE } from '@/models/linkType';
 import { useLinkWriter, type WriterLink } from '@/state/LinkWriterContext';
 import { NfcService, type NfcWriteStage } from '@/nfc/nfcService';
 import { describeWarnings, warningsForLink } from '@/utils/linkWarnings';
+import { copyNativeRecords, type NativeNdefRecord } from '@/nfc/aar';
 import { NdefSize } from '@/utils/ndefSize';
 import { hostOf } from '@/utils/urlNormalizer';
 import { linkTypeIcon } from '@/theme/icons';
@@ -30,7 +31,7 @@ type AarNotice = { primary: WriterLink; revision: number };
 type Props = NativeStackScreenProps<RootStackParamList, 'LinkEdit'>;
 
 export function LinkEditScreen({ navigation, route }: Props) {
-  const { links, capacity, aarEnabled, primaryRevision, enableAar, disableAar, replaceFromTag, clear, removeLink, setPrimary, reorder } = useLinkWriter();
+  const { links, preservedRecords, capacity, aarEnabled, primaryRevision, enableAar, disableAar, replaceFromTag, clear, removeLink, setPrimary, reorder } = useLinkWriter();
   const [aarNotice, setAarNotice] = useState<AarNotice | null>(null);
   const consent = useRef<AarNotice | null>(null);
   const declineButton = useRef<View>(null);
@@ -38,7 +39,7 @@ export function LinkEditScreen({ navigation, route }: Props) {
     consent.current = null;
     setAarNotice(null);
   }, []);
-  const failedWrite = useRef<{ urls: string[]; androidPackage?: string; links: WriterLink[] } | null>(null);
+  const failedWrite = useRef<{ urls: string[]; androidPackage?: string; preservedRecords: NativeNdefRecord[]; links: WriterLink[] } | null>(null);
   const [ready, setReady] = useState(false);
   const [reading, setReading] = useState(false);
   const [readError, setReadError] = useState<string | null>(null);
@@ -72,6 +73,7 @@ export function LinkEditScreen({ navigation, route }: Props) {
     const cancellation = new AbortController();
     readCancellation.current = cancellation;
     readPending.current = true;
+    failedWrite.current = null;
     setReady(false);
     setReading(true);
     setReadError(null);
@@ -85,11 +87,11 @@ export function LinkEditScreen({ navigation, route }: Props) {
         : result.reason === 'no_url' && result.urls?.length === 0 ? result.urls : undefined;
       if (urls && result.writable === true && typeof result.capacity === 'number' &&
           Number.isSafeInteger(result.capacity) && result.capacity > 0) {
-        replaceFromTag(urls, result.capacity);
+        replaceFromTag(urls, result.capacity, result.preservedRecords);
         setReady(true);
       } else {
         setDiagnosable(result.writable === false || result.ok ||
-          result.reason === 'not_ndef' || result.reason === 'status_unknown');
+          result.reason === 'not_ndef' || result.reason === 'status_unknown' || result.reason === 'invalid_records');
         setReadError(result.writable === false
           ? '이 태그는 읽기 전용이라 수정할 수 없습니다.'
           : result.ok ? '태그 상태를 확인할 수 없습니다. 다시 읽어주세요.' : result.message);
@@ -122,16 +124,23 @@ export function LinkEditScreen({ navigation, route }: Props) {
         setReadError('태그 읽기가 중단되었습니다. 다시 읽어주세요.');
       }
     });
+    failedWrite.current = null;
     setReady(false);
     setReadError(null);
     setDiagnosable(false);
     if (route.params) {
-      const { urls, capacity: tagCapacity, writable } = route.params;
+      const { urls, preservedRecords: records, capacity: tagCapacity, writable } = route.params;
       clear();
       if (writable !== false && typeof tagCapacity === 'number' &&
           Number.isSafeInteger(tagCapacity) && tagCapacity > 0) {
-        replaceFromTag(urls, tagCapacity);
-        setReady(true);
+        try {
+          if (Platform.OS !== 'android' && records?.length) throw new Error('Unsupported record preservation');
+          replaceFromTag(urls, tagCapacity, records);
+          setReady(true);
+        } catch {
+          setDiagnosable(true);
+          setReadError('기존 기록을 안전하게 보존할 수 없습니다. 다시 읽거나 태그 상태를 확인해주세요.');
+        }
       } else {
         setDiagnosable(true);
         setReadError(writable === false
@@ -164,7 +173,7 @@ export function LinkEditScreen({ navigation, route }: Props) {
   const androidPackage = Platform.OS === 'android' && aarEnabled ? primary?.linkType.androidPackage : undefined;
   const linkBytes = NdefSize.estimateMessageBytes(urls);
   const aarBytes = androidPackage ? NdefSize.aarBytes(androidPackage) : 0;
-  const usedBytes = NdefSize.estimateMessageBytes(urls, androidPackage);
+  const usedBytes = NdefSize.estimateMessageBytes(urls, androidPackage, Platform.OS === 'android' ? preservedRecords : []);
   const totalCapacity = NdefSize.isValidCapacity(capacity) ? capacity : undefined;
   const overCapacity = totalCapacity !== undefined && usedBytes > totalCapacity;
   const cannotSave = totalCapacity === undefined || overCapacity;
@@ -234,9 +243,9 @@ export function LinkEditScreen({ navigation, route }: Props) {
   };
 
   const onSave = async () => {
-    const saved = failedWrite.current ?? { urls: [...urls], androidPackage, links: [...links] };
+    const saved = failedWrite.current ?? { urls: [...urls], androidPackage, preservedRecords: copyNativeRecords(preservedRecords), links: [...links] };
     if (!ready || reading || writePending.current || dragging || consent.current || !navigation.isFocused() ||
-        saved.urls.length === 0 || !NdefSize.canStoreAll(saved.urls, capacity, saved.androidPackage)) return;
+        saved.urls.length === 0 || !NdefSize.canStoreAll(saved.urls, capacity, saved.androidPackage, Platform.OS === 'android' ? saved.preservedRecords : [])) return;
     const request = ++writeRequest.current;
     const cancellation = new AbortController();
     writeCancellation.current = cancellation;
@@ -250,6 +259,7 @@ export function LinkEditScreen({ navigation, route }: Props) {
     try {
       const result = await NfcService.writeUrls(snapshot, {
         androidPackage: saved.androidPackage,
+        preservedRecords: saved.preservedRecords,
         signal: cancellation.signal,
         onStage: (stage) => { if (active()) setWriteStage(stage); },
       });

@@ -43,6 +43,7 @@ export function TagReadScreen({ navigation }: Props) {
   const [reading, setReading] = useState(false);
   const [tag, setTag] = useState<ReadTag | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [timedOut, setTimedOut] = useState(false);
   const [nfcAvailable, setNfcAvailable] = useState(true);
   // 읽기 전용·NDEF 아님·상태 조회 실패 — ③ 태그 상태 확인으로 안내할 이상 (D8)
   const [diagnosable, setDiagnosable] = useState(false);
@@ -83,6 +84,7 @@ export function TagReadScreen({ navigation }: Props) {
     readPending.current = true;
     setReading(true);
     setErrorMsg(null);
+    setTimedOut(false);
     setDiagnosable(false);
     setTag(null); // 새 읽기가 실패/취소돼도 이전 태그로 수정하기에 진입하지 않는다.
     try {
@@ -92,6 +94,7 @@ export function TagReadScreen({ navigation }: Props) {
       if (!supported) return;
       const result = await NfcService.readUrl(cancellation.signal);
       if (!mounted.current || request !== readRequest.current || !navigation.isFocused()) return;
+      setTimedOut(result.reason === 'timeout');
       setDiagnosable(result.writable === false || result.reason === 'not_ndef' || result.reason === 'status_unknown' || result.reason === 'invalid_records');
       if ((result.url && (result.ok || result.reason === 'invalid_records')) || (result.reason === 'no_url' && result.urls?.length === 0)) {
         setTag({
@@ -283,7 +286,7 @@ export function TagReadScreen({ navigation }: Props) {
         {errorMsg ? (
           <>
             <View style={{ height: 14 }} />
-            <AppInfoCard title="읽기 실패" message={errorMsg} variant="error" />
+            <AppInfoCard title={timedOut ? '시간 초과' : '읽기 실패'} message={errorMsg} variant="error" />
           </>
         ) : null}
       </ScrollView>
@@ -305,7 +308,7 @@ export function TagReadScreen({ navigation }: Props) {
         ) : (
           <>
             <AppPrimaryButton
-              label={reading ? '태그를 대세요…' : '태그 읽기'}
+              label={reading ? '태그를 대세요…' : timedOut ? '다시 시도' : '태그 읽기'}
               onPress={onRead}
               disabled={!nfcAvailable}
               loading={reading}

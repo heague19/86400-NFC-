@@ -48,11 +48,13 @@ const manager = {
   isEnabled: async () => options.enabled !== false,
   requestTechnology: async () => {
     events.push('request');
-    if (options.requestError) throw new Error('cancelled');
+    if (options.requestError) throw options.requestError instanceof Error ? options.requestError : new Error('cancelled');
     await options.requestGate?.promise;
   },
   cancelTechnologyRequest: async () => {
     events.push('cancel');
+    options.onCancel?.();
+    await options.cleanupGate?.promise;
     if (options.cancelError) throw new Error('cancel failed');
   },
   getTag: async () => {
@@ -85,9 +87,10 @@ const manager = {
     },
   },
 };
+const nfcErrors = load('node_modules/react-native-nfc-manager/src/NfcError.js', { 'react-native': { Platform: Platform } });
 const { NfcService, encodeNativeRecords } = load('src/nfc/nfcService.ts', {
   'react-native': { Platform },
-  'react-native-nfc-manager': { default: manager, Ndef, NdefStatus, NfcTech: { Ndef: 'Ndef' } },
+  'react-native-nfc-manager': { default: manager, Ndef, NdefStatus, NfcError: nfcErrors, NfcErrorIOS: nfcErrors.NfcErrorIOS, NfcTech: { Ndef: 'Ndef' } },
   '../utils/urlNormalizer': normalizer, './aar': aar,
 }, '\nexport { encodeNativeRecords };');
 
@@ -102,6 +105,59 @@ async function run(settings = {}, read = false, urls = ['https://example.com'], 
 }
 
 (async () => {
+  // Fake time exercises the production acquisition timer without real waits.
+  {
+    const { mock } = require('node:test');
+    const gate = () => { let resolve, reject; const promise = new Promise((r, j) => { resolve = r; reject = j; }); return { promise, resolve, reject }; };
+    const pause = () => new Promise(setImmediate);
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      for (const call of [() => NfcService.readUrl(), () => NfcService.inspectTag(), () => NfcService.writeUrls(['https://example.com'])]) {
+        const request = gate(); options = { requestGate: request }; events = [];
+        let done = false; const attempt = call().then((r) => { done = true; return r; }); await pause();
+        mock.timers.tick(29999); await pause(); assert.equal(done, false);
+        mock.timers.tick(1); const result = await attempt;
+        assert.equal(result.reason, 'timeout'); assert.ok(result.message.includes('다시 시도'));
+        assert.deepEqual(events, ['request', 'cancel'], 'Deadline stops before status/read/write and closes exactly once');
+        request.resolve(); await pause(); assert.deepEqual(events, ['request', 'cancel'], 'Late connection cannot perform old work');
+        options = {}; assert.equal((await NfcService.readUrl()).ok, true, 'Explicit retry opens a clean session');
+      }
+      const request = gate(), cleanup = gate();
+      options = { requestGate: request, cleanupGate: cleanup, onCancel: () => request.reject(new nfcErrors.UserCancel()) }; events = [];
+      const expired = NfcService.readUrl(); await pause(); mock.timers.tick(30000); await pause();
+      options.requestGate = undefined; options.onCancel = undefined;
+      const next = NfcService.readUrl(); await pause();
+      assert.equal(events.filter((e) => e === 'request').length, 1, 'Retry waits for timeout cleanup');
+      cleanup.resolve(); assert.equal((await expired).reason, 'timeout'); assert.equal((await next).ok, true);
+      assert.equal(events.filter((e) => e === 'cancel').length, 2, 'Native cancellation does not override timeout or double-close');
+      for (const phase of ['writeGate', 'freshGate']) {
+        const held = gate(); options = { [phase]: held }; events = [];
+        const saving = NfcService.writeUrls(['https://example.com']); await pause();
+        mock.timers.tick(60000); await pause(); assert.equal(events.includes('cancel'), false, 'Connected write/verification has no acquisition timer');
+        held.resolve(); assert.equal((await saving).ok, true);
+        const completed = [...events]; mock.timers.tick(60000); await pause(); assert.deepEqual(events, completed, 'Completed timer cannot close a later session');
+      }
+      const abortedRequest = gate(), abort = new AbortController();
+      options = { requestGate: abortedRequest }; events = [];
+      const stopped = NfcService.readUrl(abort.signal); await pause(); abort.abort(); abortedRequest.resolve();
+      assert.equal((await stopped).reason, 'cancelled'); mock.timers.tick(30000); await pause();
+      assert.equal(events.filter((e) => e === 'cancel').length, 1, 'User cancellation clears the timer');
+      Platform.OS = 'ios'; manager.setAlertMessage = async () => {};
+      for (const error of [nfcErrors.buildNfcExceptionIOS('NFCError:201'), new Error('NFCError:201')]) {
+        for (const call of [() => NfcService.readUrl(), () => NfcService.inspectTag(), () => NfcService.writeUrls(['https://example.com'])]) {
+          options = { requestError: error }; events = [];
+          assert.equal((await call()).reason, 'timeout'); assert.equal(events.filter((e) => e === 'cancel').length, 1);
+        }
+      }
+      options = { requestError: nfcErrors.buildNfcExceptionIOS('NFCError:200') }; events = [];
+      assert.equal((await NfcService.readUrl()).reason, 'cancelled');
+      const iosRequest = gate(); options = { requestGate: iosRequest }; events = [];
+      const iosRead = NfcService.readUrl(); await pause(); mock.timers.tick(60000); await pause();
+      assert.deepEqual(events, ['request'], 'iOS keeps its system-controlled deadline');
+      iosRequest.reject(nfcErrors.buildNfcExceptionIOS('NFCError:201')); assert.equal((await iosRead).reason, 'timeout');
+    } finally { mock.timers.reset(); Platform.OS = 'android'; }
+    console.log('PASS: 30s acquisition boundary/read/inspect/write, no late work, cleanup-before-retry, one close, no timer during writes/verification, user cancel, actual iOS typed/raw timeout');
+  }
   assert.deepEqual(await androidHandler.getNdefStatus(), { status: 1, capacity: 0 });
   // AAR tests run the actual service through native byte-array types/hex ids and the installed codec.
   const aarUrls = ['https://www.instagram.com/Mixed_Name/', 'https://example.com/A%2fb?flag#Keep', 'https://www.instagram.com/Mixed_Name/'];

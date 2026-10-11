@@ -168,7 +168,7 @@ export function TagInfoScreen({ navigation }: Props) {
 
         {result && !result.ok ? (
           <AppInfoCard
-            title={result.reason === 'status_unknown' ? '태그 상태를 확인할 수 없습니다' : '확인하지 못했습니다'}
+            title={result.reason === 'timeout' ? '시간 초과' : result.reason === 'status_unknown' ? '태그 상태를 확인할 수 없습니다' : '확인하지 못했습니다'}
             message={result.message}
             variant="error"
           />
@@ -178,7 +178,7 @@ export function TagInfoScreen({ navigation }: Props) {
       <View style={styles.footer}>
         <AppPrimaryButton label="홈으로" onPress={onHome} />
         <View style={{ height: AppSpacing.itemGap }} />
-        <AppSecondaryButton label="다시 확인" onPress={onInspect} disabled={reading} />
+        <AppSecondaryButton label={result && !result.ok && result.reason === 'timeout' ? '다시 시도' : '다시 확인'} onPress={onInspect} disabled={reading} />
       </View>
     </SafeAreaView>
   );

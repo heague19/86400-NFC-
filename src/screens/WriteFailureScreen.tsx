@@ -5,13 +5,14 @@ import { AppPrimaryButton, AppSecondaryButton } from '@/components/AppButton';
 import type { WriterLink } from '@/state/LinkWriterContext';
 import { AppColors, AppSpacing, AppText } from '@/theme/tokens';
 
-export function WriteFailureScreen({ message, links, capacity, onRewrite, onEdit, onDiagnose }: {
+export function WriteFailureScreen({ message, timedOut = false, links, capacity, onRewrite, onEdit, onDiagnose }: {
   message: string; links: WriterLink[]; capacity: number | undefined;
+  timedOut?: boolean;
   onRewrite: () => void; onEdit: () => void; onDiagnose: () => void;
 }) {
   return <SafeAreaView style={styles.safe} edges={['bottom']}>
     <ScrollView contentContainerStyle={styles.content}>
-      <Text style={AppText.headlineLarge}>쓰기를 완료하지 못했습니다</Text>
+      <Text style={AppText.headlineLarge}>{timedOut ? '시간 초과' : '쓰기를 완료하지 못했습니다'}</Text>
       <Text style={[AppText.bodyLarge, styles.notice]}>{message}</Text>
       <Text style={AppText.bodyMedium}>편집한 링크와 대표는 유지됩니다. 전체 재쓰기는 목록 전체를 처음부터 기록합니다.</Text>
       <Text style={styles.notice}>보존된 링크 {links.length}개 · 읽은 태그 용량 {capacity} B</Text>
@@ -21,7 +22,7 @@ export function WriteFailureScreen({ message, links, capacity, onRewrite, onEdit
       </View>)}
     </ScrollView>
     <View style={styles.footer}>
-      <AppPrimaryButton label="전체 재쓰기" onPress={onRewrite} />
+      <AppPrimaryButton label={timedOut ? '다시 시도' : '전체 재쓰기'} onPress={onRewrite} />
       <View style={{ height: AppSpacing.sm }} />
       <AppSecondaryButton label="편집으로 돌아가기" onPress={onEdit} />
       <View style={{ height: AppSpacing.sm }} />

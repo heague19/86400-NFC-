@@ -146,9 +146,10 @@ const normalizer = load('src/utils/urlNormalizer.ts', {});
 const model = load('src/models/linkType.ts', {});
 const aarModule = load('src/nfc/aar.ts', { 'react-native-nfc-manager': { Ndef }, '../models/linkType': model });
 const size = load('src/utils/ndefSize.ts', { 'react-native-nfc-manager': { Ndef }, '../nfc/aar': aarModule });
+const nfcErrors = load('node_modules/react-native-nfc-manager/src/NfcError.js', { 'react-native': { Platform: Platform } });
 const { NfcService: service } = load('src/nfc/nfcService.ts', {
   'react-native': { Platform },
-  'react-native-nfc-manager': { __esModule: true, default: manager, Ndef, NdefStatus, NfcTech: { Ndef: 'Ndef' } },
+  'react-native-nfc-manager': { __esModule: true, default: manager, Ndef, NdefStatus, NfcError: nfcErrors, NfcErrorIOS: nfcErrors.NfcErrorIOS, NfcTech: { Ndef: 'Ndef' } },
   '../utils/urlNormalizer': normalizer, './aar': aarModule,
 });
 
@@ -332,6 +333,26 @@ async function inspect(config) {
 }
 
 (async () => {
+  {
+    const { mock } = require('node:test');
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      for (const card of ['링크 보기', '링크 편집', '태그 상태 확인']) {
+        native({ holdRequest: true, status: rw(512), tag: tagOf([uri(U2), aar, mime]) });
+        const timeoutHost = new Harness(); timeoutHost.card(card).onPress(); timeoutHost.flush(); await timeoutHost.settle();
+        mock.timers.tick(29999); await timeoutHost.settle(); assert.equal(timeoutHost.has('AppInfoCard', (p) => p.title === '시간 초과'), false);
+        mock.timers.tick(1); await timeoutHost.settle();
+        assert.ok(timeoutHost.has('AppInfoCard', (p) => p.title === '시간 초과'));
+        assert.ok(timeoutHost.labels().includes('다시 시도')); assert.equal(events.filter((e) => e === 'request').length, 1); noWrites();
+        for (const fn of timeoutHost.focusListeners.get(timeoutHost.route.key) ?? []) fn();
+        mock.timers.tick(60000); await timeoutHost.settle(); assert.equal(events.filter((e) => e === 'request').length, 1, 'Timeout/focus never auto-restarts');
+        cfg.holdRequest = false; await timeoutHost.press('다시 시도'); await timeoutHost.settle();
+        assert.equal(events.filter((e) => e === 'request').length, 2); assert.equal(timeoutHost.has('AppInfoCard', (p) => p.title === '시간 초과'), false);
+        timeoutHost.dispose();
+      }
+    } finally { mock.timers.reset(); }
+    console.log('PASS: timed acquisition -> visible timeout/manual retry in read/edit/diagnosis, no focus retry, successful fresh session');
+  }
   // ===== 5-2 service: exact serialized bytes and record counts, URL-less/mixed/empty tags =====
   assert.equal(encoded([uri(U1)]), 16); assert.equal(encoded([Ndef.textRecord('Hi')]), 9);
   for (const [name, records, count, urls, literal] of [

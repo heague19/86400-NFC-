@@ -835,9 +835,10 @@ const invalidCapacities = [undefined, null, 0, -1, NaN, Infinity, 1.5, '144', Nu
       },
     },
   };
+  const nfcErrors = load('node_modules/react-native-nfc-manager/src/NfcError.js', { 'react-native': { Platform: imports['react-native'].Platform } });
   const actualService = load('src/nfc/nfcService.ts', {
     'react-native': { Platform: { OS: 'android' } },
-    'react-native-nfc-manager': { __esModule: true, default: nativeManager, Ndef,
+    'react-native-nfc-manager': { __esModule: true, default: nativeManager, Ndef, NfcError: nfcErrors, NfcErrorIOS: nfcErrors.NfcErrorIOS,
       NdefStatus: { NotSupported: 1, ReadWrite: 2, ReadOnly: 3 }, NfcTech: { Ndef: 'Ndef' } },
     '../utils/urlNormalizer': normalizer,
     './aar': aar,
@@ -1075,6 +1076,34 @@ const invalidCapacities = [undefined, null, 0, -1, NaN, Infinity, 1.5, '144', Nu
   await h.press('저장'); await h.settle();
   assert.deepEqual(nativeWriteMessages.at(-1), Ndef.encodeMessage([Ndef.uriRecord(aarSeed[1]), a5Memo, Ndef.androidApplicationRecord('com.github.android')]));
   h.dispose();
+  {
+    const { mock } = require('node:test');
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      nativeCapacity = 512;
+      const originalAar = { ...Ndef.androidApplicationRecord('com.instagram.android'), id: [0, 255] };
+      nativeTag = { ndefMessage: [Ndef.uriRecord(aarSeed[0]), a5Memo, originalAar] };
+      h = new Harness(); h.enterEdit(); await h.settle();
+      const ids = h.context.links.map((l) => l.rowId);
+      const retained = aar.encodeNativeRecords(h.context.preservedRecords);
+      const expected = Ndef.encodeMessage(nativeTag.ndefMessage);
+      const writesBefore = nativeWriteMessages.length, requestsBefore = nativeRequests;
+      holdRequest = true;
+      const saving = h.press('저장'); await h.settle();
+      mock.timers.tick(30000); await saving; await h.settle();
+      assert.ok(h.find('AppPrimaryButton', (p) => p.label === '다시 시도'));
+      assert.equal(nativeWriteMessages.length, writesBefore, 'Write wait timeout never starts native write');
+      assert.deepEqual(h.context.links.map((l) => l.rowId), ids);
+      assert.deepEqual(aar.encodeNativeRecords(h.context.preservedRecords), retained);
+      assert.equal(h.context.aarEnabled, true); assert.equal(h.context.capacity, 512);
+      mock.timers.tick(60000); await h.settle(); assert.equal(nativeRequests, requestsBefore + 1);
+      holdRequest = false;
+      await h.press('다시 시도'); await h.settle();
+      assert.equal(h.route.name, 'WriteComplete'); assert.deepEqual(nativeWriteMessages.at(-1), expected);
+      assert.equal(h.route.params.androidPackage, 'com.instagram.android'); h.dispose();
+    } finally { holdRequest = false; mock.timers.reset(); }
+    console.log('PASS: write acquisition timeout retains ordered links/row IDs/raw memo+AAR/capacity; manual retry writes full original snapshot');
+  }
   imports['react-native'].Platform.OS = 'ios';
   h = new Harness(); h.enterEdit(); await h.settle();
   assert.equal(nodes(h.editor.tree).some((node) => node.type === 'Switch' || node.type === 'Modal' && node.props.visible), false);

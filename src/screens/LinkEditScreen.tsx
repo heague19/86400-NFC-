@@ -43,6 +43,7 @@ export function LinkEditScreen({ navigation, route }: Props) {
   const [ready, setReady] = useState(false);
   const [reading, setReading] = useState(false);
   const [readError, setReadError] = useState<string | null>(null);
+  const [readTimedOut, setReadTimedOut] = useState(false);
   // 읽기 전용·NDEF 아님·상태 조회 실패 — ③ 태그 상태 확인으로 안내할 이상 (D8)
   const [diagnosable, setDiagnosable] = useState(false);
   const diagnosing = useRef(false);
@@ -66,6 +67,7 @@ export function LinkEditScreen({ navigation, route }: Props) {
     setWriting(false);
   }, []);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [writeTimedOut, setWriteTimedOut] = useState(false);
 
   const onRead = useCallback(async () => {
     if (readPending.current || !navigation.isFocused()) return;
@@ -77,11 +79,13 @@ export function LinkEditScreen({ navigation, route }: Props) {
     setReady(false);
     setReading(true);
     setReadError(null);
+    setReadTimedOut(false);
     setDiagnosable(false);
     clear(); // 읽기 전 이전 태그의 목록과 용량을 사용할 수 없게 한다.
     try {
       const result = await NfcService.readUrl(cancellation.signal);
       if (!mounted.current || request !== readRequest.current || !navigation.isFocused()) return;
+      setReadTimedOut(result.reason === 'timeout');
       const urls = result.ok
         ? result.urls ?? (result.url ? [result.url] : undefined)
         : result.reason === 'no_url' && result.urls?.length === 0 ? result.urls : undefined;
@@ -127,6 +131,7 @@ export function LinkEditScreen({ navigation, route }: Props) {
     failedWrite.current = null;
     setReady(false);
     setReadError(null);
+    setReadTimedOut(false);
     setDiagnosable(false);
     if (route.params) {
       const { urls, preservedRecords: records, capacity: tagCapacity, writable } = route.params;
@@ -255,6 +260,7 @@ export function LinkEditScreen({ navigation, route }: Props) {
     setWriteStage('waiting');
     setWriting(true);
     setErrorMsg(null);
+    setWriteTimedOut(false);
     const active = () => mounted.current && request === writeRequest.current &&
       !cancellation.signal.aborted && navigation.isFocused();
     try {
@@ -274,6 +280,7 @@ export function LinkEditScreen({ navigation, route }: Props) {
         navigation.navigate('WriteComplete', { urls: snapshot, usedBytes: result.usedBytes, androidPackage: result.androidPackage });
       } else if (result.reason !== 'cancelled') {
         failedWrite.current = saved;
+        setWriteTimedOut(result.reason === 'timeout');
         setErrorMsg(result.message);
       }
     } catch {
@@ -291,7 +298,7 @@ export function LinkEditScreen({ navigation, route }: Props) {
   };
 
   if (writing) return <WriteWaitingScreen stage={writeStage} onCancel={cancelWrite} />;
-  if (errorMsg) return <WriteFailureScreen message={errorMsg} links={failedWrite.current?.links ?? links} capacity={capacity}
+  if (errorMsg) return <WriteFailureScreen message={errorMsg} timedOut={writeTimedOut} links={failedWrite.current?.links ?? links} capacity={capacity}
     onRewrite={onSave} onEdit={() => { failedWrite.current = null; setErrorMsg(null); }} onDiagnose={onOpenDiagnosis} />;
 
   if (!ready) {
@@ -304,12 +311,12 @@ export function LinkEditScreen({ navigation, route }: Props) {
           {readError ? (
             <>
               <View style={{ height: AppSpacing.lg }} />
-              <AppInfoCard title="태그 읽기" message={readError} variant="error" />
+              <AppInfoCard title={readTimedOut ? '시간 초과' : '태그 읽기'} message={readError} variant="error" />
             </>
           ) : null}
         </ScrollView>
         <View style={styles.footer}>
-          <AppPrimaryButton label={reading ? '태그를 대세요…' : '다시 읽기'} onPress={onRead} loading={reading} />
+          <AppPrimaryButton label={reading ? '태그를 대세요…' : readTimedOut ? '다시 시도' : '다시 읽기'} onPress={onRead} loading={reading} />
           {diagnosable ? (
             <>
               <View style={{ height: AppSpacing.itemGap }} />

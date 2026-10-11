@@ -9,7 +9,7 @@
 // 실기기에서만 동작한다 (에뮬레이터에는 NFC 하드웨어가 없음).
 
 import { Platform } from 'react-native';
-import NfcManager, { Ndef, NfcErrorIOS, NfcTech, NdefStatus } from 'react-native-nfc-manager';
+import NfcManager, { Ndef, NfcError, NfcErrorIOS, NfcTech, NdefStatus } from 'react-native-nfc-manager';
 import type { NdefRecord } from 'react-native-nfc-manager';
 import { isValidHttpUrl } from '../utils/urlNormalizer';
 import { copyNativeRecords, encodeNativeRecords, encodeLinkMessage, readAarRecords, type AarRecord, type NativeNdefRecord } from './aar';
@@ -25,6 +25,7 @@ export type NfcFailureReason =
   | 'invalid_records' // 원본 메시지를 안전하게 보존할 수 없음
   | 'no_url'           // 태그에 URL 레코드 없음
   | 'cancelled'        // 사용자 취소 / 세션 종료
+  | 'timeout'          // 태그 인식 대기 시간 초과
   | 'failed'           // 쓰기·읽기 중 오류, 태그 이동
   | 'unknown'
   | 'verify_mismatch'; // 쓰기 후 재읽기 대조 불일치 (부분 기록 가능성)
@@ -98,6 +99,7 @@ const MESSAGES: Record<NfcFailureReason, string> = {
   invalid_records: '기존 기록을 안전하게 보존할 수 없어 저장할 수 없습니다. 다시 읽거나 태그 상태를 확인해주세요.',
   no_url: '태그에서 URL을 찾지 못했습니다.',
   cancelled: 'NFC 작업이 취소되었습니다.',
+  timeout: '태그 인식 대기 시간이 초과되었습니다. 태그를 다시 가까이 대고 다시 시도해주세요.',
   failed: '태그를 찾지 못했습니다. 휴대폰 뒷면을 태그에 다시 가까이 대주세요.',
   unknown: '알 수 없는 문제가 발생했습니다. 다시 시도해주세요.',
   // HANDOFF.md §4.9 — 쓰기 API가 성공을 반환해도 재읽기 대조가 불일치하면
@@ -111,13 +113,15 @@ function fail(reason: NfcFailureReason): { ok: false; reason: NfcFailureReason; 
 
 /** 던져진 예외를 에러 케이스로 분류 */
 function classifyError(err: unknown): NfcFailureReason {
+  if (err instanceof NfcError.UserCancel) return 'cancelled';
+  if (err instanceof NfcError.Timeout) return 'timeout';
   const raw = String((err as { message?: string })?.message ?? err ?? '');
 
   // iOS: 사용자가 스캔 시트를 닫거나 시스템이 세션을 끝낸 경우
   if (Platform.OS === 'ios') {
     const code = NfcErrorIOS.parse(raw);
     if (code === NfcErrorIOS.errCodes.userCancel) return 'cancelled';
-    if (code === NfcErrorIOS.errCodes.timeout) return 'failed';
+    if (code === NfcErrorIOS.errCodes.timeout) return 'timeout';
   }
 
   const text = raw.toLowerCase();
@@ -130,6 +134,7 @@ function classifyError(err: unknown): NfcFailureReason {
 }
 
 let pendingNdefCleanup: Promise<void> | undefined;
+const ANDROID_TAG_WAIT_MS = 30_000;
 
 /**
  * NFC 세션을 열고 작업을 수행한 뒤 반드시 닫는다.
@@ -154,13 +159,26 @@ async function withNdefSession<T>(
   };
   const onAbort = () => { void cancel(); };
   signal?.addEventListener('abort', onAbort);
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const connectedTech = await NfcManager.requestTechnology(NfcTech.Ndef, { alertMessage });
+    const request = NfcManager.requestTechnology(NfcTech.Ndef, { alertMessage });
+    const connectedTech = Platform.OS === 'android' ? await Promise.race([
+      request,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new NfcError.Timeout());
+          void cancel();
+        }, ANDROID_TAG_WAIT_MS);
+      }),
+    ]) : await request;
+    // 태그가 연결되면 타이머를 해제해 쓰기·검증을 중간에 끊지 않는다.
+    clearTimeout(timer);
     if (signal?.aborted) throw new Error('cancelled');
     const result = await work(connectedTech);
     if (signal?.aborted) throw new Error('cancelled');
     return result;
   } finally {
+    clearTimeout(timer);
     signal?.removeEventListener('abort', onAbort);
     // 취소 실패는 무시 — 원래 작업 결과/에러를 덮어쓰지 않는다
     await cancel();

@@ -853,10 +853,10 @@ const invalidCapacities = [undefined, null, 0, -1, NaN, Infinity, 1.5, '144', Nu
   for (const pathName of ['direct', 'view']) {
     for (const [kind, originalRecords, originalUrls, preserved] of [
       ['mixed', [a5Memo, Ndef.uriRecord(a5Url), a5Mime, Ndef.textRecord(a5Url), a5OtherUri,
-        Ndef.uriRecord(a5Url), ...a5OldAars], [a5Url, a5Url], [a5Memo, a5Mime, Ndef.textRecord(a5Url), a5OtherUri]],
-      ['non-URL', [a5Memo, a5Mime, a5OtherUri, ...a5OldAars], [], [a5Memo, a5Mime, a5OtherUri]],
+        Ndef.uriRecord(a5Url), ...a5OldAars], [a5Url, a5Url], [a5Memo, a5Mime, Ndef.textRecord(a5Url), a5OtherUri, ...a5OldAars]],
+      ['non-URL', [a5Memo, a5Mime, a5OtherUri, ...a5OldAars], [], [a5Memo, a5Mime, a5OtherUri, ...a5OldAars]],
       ['fallback', [a5Memo, Ndef.textRecord(a5Url), a5Mime, Ndef.textRecord(a5Url), a5OtherUri, ...a5OldAars],
-        [a5Url, a5Url], [a5Memo, a5Mime, a5OtherUri]],
+        [a5Url, a5Url], [a5Memo, a5Mime, a5OtherUri, ...a5OldAars]],
     ]) {
       nativeCapacity = 512;
       nativeTag = { ndefMessage: structuredClone(originalRecords.map((r) => ({ ...r,
@@ -872,7 +872,8 @@ const invalidCapacities = [undefined, null, 0, -1, NaN, Infinity, 1.5, '144', Nu
       }
       const retainedKey = h.route.key, entryReads = reads;
       assert.deepEqual(contextUrls(h), originalUrls, `${pathName}/${kind}: URL order/duplicates`);
-      assert.equal(h.context.aarEnabled, false);
+      assert.equal(h.context.aarEnabled, true);
+      assert.equal(h.find('Switch').value, true);
       const preservedBytes = Ndef.encodeMessage(preserved);
       assert.deepEqual(aar.encodeNativeRecords(h.context.preservedRecords), preservedBytes);
       assert.equal(h.find('AppCapacityGauge').used, aar.encodeLinkMessage(originalUrls, undefined, preserved).length);
@@ -1031,15 +1032,55 @@ const invalidCapacities = [undefined, null, 0, -1, NaN, Infinity, 1.5, '144', Nu
   nativeMismatch = false; await h.press('전체 재쓰기'); await h.settle();
   assert.deepEqual(nativeWriteMessages.at(-1), failedBytes);
   assert.equal(h.route.params.androidPackage, 'com.instagram.android'); h.dispose();
-  // Existing AAR on a read tag never auto-enables writing.
-  nativeTag = { ndefMessage: [Ndef.uriRecord(aarSeed[0]), Ndef.androidApplicationRecord('com.instagram.android')] };
-  h = new Harness(); h.enterEdit(); await h.settle(); assert.equal(h.context.aarEnabled, false); h.dispose();
+  // Existing AAR survives both entry routes, representative edits, failure/retry, and continuation.
+  for (const pathName of ['direct', 'view']) {
+    const existingAar = { ...Ndef.androidApplicationRecord('com.instagram.android'), id: [0, 255] };
+    nativeTag = { ndefMessage: [...aarSeed.map((u) => Ndef.uriRecord(u)), a5Memo, existingAar] };
+    h = new Harness();
+    if (pathName === 'direct') h.enterEdit();
+    else { h.find('AppActionCard', (p) => p.title === '링크 보기').onPress(); h.flush(); await h.settle(); h.press('수정하기'); }
+    await h.settle();
+    assert.equal(h.context.aarEnabled, true); assert.equal(h.find('Switch').value, true);
+    assert.equal(h.context.androidPackage, undefined, 'Existing AAR retains its raw ID/payload rather than being recreated');
+    assert.ok(screenText(h).includes('기존 앱 설정 유지: Instagram'));
+    h.context.updateLink(0, { ...h.context.links[0], normalizedUrl: 'https://www.instagram.com/edited/' }); h.flush();
+    h.context.setPrimary(1); h.flush();
+    assert.equal(h.context.aarEnabled, true, 'Existing AAR is not silently removed by representative changes');
+    const expected = Ndef.encodeMessage([...contextUrls(h).map((u) => Ndef.uriRecord(u)), a5Memo, existingAar]);
+    assert.equal(h.find('AppCapacityGauge').used, expected.length);
+    nativeMismatch = true; await h.press('저장'); await h.settle();
+    nativeMismatch = false; await h.press('전체 재쓰기'); await h.settle();
+    assert.deepEqual(nativeWriteMessages.at(-1), expected);
+    assert.equal(h.route.params.androidPackage, 'com.instagram.android');
+    h.press('링크 더 추가하기'); h.find('AppActionCard', (p) => p.title === '직접 입력').onPress(); h.flush();
+    h.find('AppTextField').onChangeText('https://continued.example/'); h.flush(); h.press('다음');
+    await h.press('저장'); await h.settle();
+    assert.deepEqual(nativeWriteMessages.at(-1), Ndef.encodeMessage([...contextUrls(h).map((u) => Ndef.uriRecord(u)), a5Memo, existingAar]));
+    h.press('링크 더 추가하기'); h.find('AppActionCard', (p) => p.title === '직접 입력').onPress(); h.flush();
+    h.find('AppTextField').onChangeText('https://another.example/'); h.flush(); h.press('다음');
+    h.find('Switch').onValueChange(false); h.flush();
+    assert.equal(h.context.aarEnabled, false);
+    assert.deepEqual(aar.encodeNativeRecords(h.context.preservedRecords), Ndef.encodeMessage([a5Memo]));
+    await h.press('저장'); await h.settle();
+    assert.equal(Ndef.decodeMessage(nativeWriteMessages.at(-1)).some(aar.isAarRecord), false);
+    h.dispose();
+  }
+  // Replacement uses the existing consent sheet and changes only the AAR.
+  nativeTag = { ndefMessage: [Ndef.uriRecord(aarSeed[1]), a5Memo, Ndef.androidApplicationRecord('com.instagram.android')] };
+  h = new Harness(); h.enterEdit(); await h.settle();
+  h.press('대표 앱으로 변경'); assert.ok(h.find('Modal')); h.find('Modal').onRequestClose(); h.flush();
+  assert.equal(h.context.aarEnabled, true); assert.equal(h.context.preservedRecords.some(aar.isAarRecord), true);
+  h.press('대표 앱으로 변경'); h.press('켜기');
+  assert.equal(h.context.preservedRecords.some(aar.isAarRecord), false);
+  await h.press('저장'); await h.settle();
+  assert.deepEqual(nativeWriteMessages.at(-1), Ndef.encodeMessage([Ndef.uriRecord(aarSeed[1]), a5Memo, Ndef.androidApplicationRecord('com.github.android')]));
+  h.dispose();
   imports['react-native'].Platform.OS = 'ios';
   h = new Harness(); h.enterEdit(); await h.settle();
   assert.equal(nodes(h.editor.tree).some((node) => node.type === 'Switch' || node.type === 'Modal' && node.props.visible), false);
   assert.equal(screenText(h).includes('안드로이드에서 앱 바로 열기'), false, 'No iOS AAR option in this scope');
   h.dispose(); imports['react-native'].Platform.OS = 'android';
-  console.log('PASS: AAR actual UI notice loss-first/cancel-focus/back/stale consent; A->B->A/edit/delete/Home reset; non-primary/input/continuation retention; six defaults/package bytes/native writes; overflow toggle; failed snapshot rewrite; custom/iOS absent; existing tag AAR starts off');
+  console.log('PASS: AAR actual UI notice loss-first/cancel-focus/back/stale consent; A->B->A/edit/delete/Home reset; non-primary/input/continuation retention; six defaults/package bytes/native writes; overflow toggle; failed snapshot rewrite; custom/iOS absent; existing tag AAR stays on until explicit removal/replacement');
   for (const capacity of [137, 140, 144]) {
     nativeCapacity = capacity;
     nativeTag = { ndefMessage: [Ndef.uriRecord(boundaryUrl)] };

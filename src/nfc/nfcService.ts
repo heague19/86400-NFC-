@@ -12,7 +12,7 @@ import { Platform } from 'react-native';
 import NfcManager, { Ndef, NfcErrorIOS, NfcTech, NdefStatus } from 'react-native-nfc-manager';
 import type { NdefRecord } from 'react-native-nfc-manager';
 import { isValidHttpUrl } from '../utils/urlNormalizer';
-import { copyNativeRecords, encodeNativeRecords, encodeLinkMessage, isAarRecord, readAarRecords, type AarRecord, type NativeNdefRecord } from './aar';
+import { copyNativeRecords, encodeNativeRecords, encodeLinkMessage, readAarRecords, type AarRecord, type NativeNdefRecord } from './aar';
 
 /** feature-spec.md "4. Error Handling Specification" 의 에러 케이스 */
 export type NfcFailureReason =
@@ -329,7 +329,8 @@ export const NfcService = {
           await NfcManager.setAlertMessage('저장 완료').catch(() => {});
         }
         checkCancelled();
-        return { ok: true as const, message: '태그에 링크를 저장했습니다.', usedBytes: bytes.length, androidPackage };
+        return { ok: true as const, message: '태그에 링크를 저장했습니다.', usedBytes: bytes.length,
+          androidPackage: readAarRecords(Ndef.decodeMessage(bytes))[0]?.packageName };
       }, signal);
     } catch (err) {
       return fail(signal?.aborted ? 'cancelled' : classifyError(err));
@@ -369,7 +370,7 @@ export const NfcService = {
         const consumed = new Set<number>();
         const urls = extractUrls(records, consumed);
         const url = urls[0];
-        const preservedRecords = records.filter((record, index) => !consumed.has(index) && !isAarRecord(record));
+        const preservedRecords = records.filter((record, index) => !consumed.has(index));
 
         if (Platform.OS === 'ios' && preservedRecords.some((record) => record.tnf !== Ndef.TNF_EMPTY)) {
           return { ...fail('invalid_records'), url, urls, capacity: status.capacity, writable: status.writable,

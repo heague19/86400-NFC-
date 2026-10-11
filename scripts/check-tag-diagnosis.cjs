@@ -540,7 +540,7 @@ async function inspect(config) {
     await link.onPress(); await link.onLongPress();
     assert.equal(openedUrls.at(-1), U1); assert.equal(copiedUrls.at(-1), U1);
     h.press('수정하기'); await h.settle();
-    assert.equal(h.context.aarEnabled, false, 'Read native AAR is display-only until new consent'); h.dispose();
+    assert.equal(h.context.aarEnabled, true, 'Existing native AAR remains enabled on edit'); assert.equal(h.find('Switch').value, true); assert.equal(h.context.preservedRecords.some(aarModule.isAarRecord), true); h.dispose();
   }
   h = await open({ status: rw(), tag: tagOf([uri(U1)]) });
   assert.equal(h.items()['앱 바로 열기'], undefined, 'No status row without AAR'); h.dispose();
@@ -702,7 +702,7 @@ async function inspect(config) {
   for (const fn of h.focusListeners.get(h.route.key) ?? []) fn();
   await h.settle(); assert.equal(requests(), 1, 'External app return does not reread');
   h.press('수정하기'); await h.settle();
-  assert.deepEqual(h.route.params, { urls: [U1, U2, U1], preservedRecords: [], capacity: 504, writable: true });
+  assert.deepEqual(h.route.params, { urls: [U1, U2, U1], preservedRecords: aarModule.copyNativeRecords([aar]), capacity: 504, writable: true });
   assert.equal(requests(), 1, 'Transfer opens zero reads');
   h.back(); await h.settle();
   assert.equal(h.text(), textOf(resultTree), 'Editor return retains result text');

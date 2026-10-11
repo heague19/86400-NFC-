@@ -26,6 +26,8 @@ interface LinkWriterContextValue {
   links: WriterLink[];
   preservedRecords: NativeNdefRecord[];
   aarEnabled: boolean;
+  /** 새로 선택한 대표의 AAR. 기존 AAR은 preservedRecords에 보존한다. */
+  androidPackage?: string;
   primaryRevision: number;
   /** 고지 당시 대표 객체와 지금 대표가 같을 때만 켠다. */
   enableAar: (primary: WriterLink, revision: number) => void;
@@ -53,28 +55,30 @@ interface LinkWriterContextValue {
 const LinkWriterContext = createContext<LinkWriterContextValue | undefined>(undefined);
 
 export function LinkWriterProvider({ children }: { children: React.ReactNode }) {
-  const [writer, setWriter] = useState<{ links: WriterLink[]; aarEnabled: boolean; primaryRevision: number }>({ links: [], aarEnabled: false, primaryRevision: 0 });
-  const { links, aarEnabled, primaryRevision } = writer;
+  const [writer, setWriter] = useState<{ links: WriterLink[]; preservedRecords: NativeNdefRecord[]; aarEnabled: boolean; primaryRevision: number }>({ links: [], preservedRecords: [], aarEnabled: false, primaryRevision: 0 });
+  const { links, preservedRecords, primaryRevision } = writer;
+  const aarEnabled = writer.aarEnabled || preservedRecords.some(isAarRecord);
+  const androidPackage = Platform.OS === 'android' && writer.aarEnabled ? links[0]?.linkType.androidPackage : undefined;
   const setLinks = useCallback((update: WriterLink[] | ((prev: WriterLink[]) => WriterLink[])) => {
     setWriter((prev) => {
       const next = typeof update === 'function' ? update(prev.links) : update;
       const samePrimary = next[0] === prev.links[0];
-      return { links: next, aarEnabled: samePrimary && prev.aarEnabled,
+      return { ...prev, links: next, aarEnabled: samePrimary && prev.aarEnabled,
         primaryRevision: prev.primaryRevision + (samePrimary ? 0 : 1) };
     });
   }, []);
-  const disableAar = useCallback(() => setWriter((prev) => ({ ...prev, aarEnabled: false, primaryRevision: prev.primaryRevision + 1 })), []);
+  const disableAar = useCallback(() => setWriter((prev) => ({ ...prev, aarEnabled: false,
+    preservedRecords: prev.preservedRecords.filter((record) => !isAarRecord(record)), primaryRevision: prev.primaryRevision + 1 })), []);
   const enableAar = useCallback((primary: WriterLink, revision: number) => {
     setWriter((prev) => Platform.OS === 'android' && prev.primaryRevision === revision && prev.links[0] === primary && primary.linkType.androidPackage
-      ? { ...prev, aarEnabled: true } : prev);
+      ? { ...prev, aarEnabled: true, preservedRecords: prev.preservedRecords.filter((record) => !isAarRecord(record)) } : prev);
   }, []);
-  const [preservedRecords, setPreservedRecords] = useState<NativeNdefRecord[]>([]);
   const [capacity, setCapacity] = useState<number | undefined>(undefined);
   const [selectedLinkType, setSelectedLinkType] = useState<LinkType | null>(null);
 
   const replaceFromTag = useCallback((urls: string[], tagCapacity: number, records: NativeNdefRecord[] = []) => {
-    const preserved = copyNativeRecords(records).filter((record) => !isAarRecord(record));
-    setLinks(urls.map((url) => {
+    const preserved = copyNativeRecords(records);
+    const nextLinks = urls.map((url) => {
       // 도메인만 같다고 프리셋으로 분류하지 않는다 — github.com/org/repo, youtube.com/watch?v=… 같은 URL을
       // 계정명 화면으로 열면 엉뚱한 URL이 조립된다. 계정 페이지가 아니면 기타로 둔다. 문자열·순서는 그대로.
       const detected = detectLinkTypeFromUrl(url);
@@ -87,12 +91,11 @@ export function LinkWriterProvider({ children }: { children: React.ReactNode }) 
         isValid: true,
         fromTag: true,
       };
-    }));
-    setPreservedRecords(preserved);
-    disableAar();
+    });
+    setWriter((prev) => ({ links: nextLinks, preservedRecords: preserved, aarEnabled: false, primaryRevision: prev.primaryRevision + 1 }));
     setCapacity(tagCapacity);
     setSelectedLinkType(null);
-  }, [setLinks, disableAar]);
+  }, []);
 
   const selectLinkType = useCallback((linkType: LinkType) => {
     setSelectedLinkType(linkType);
@@ -141,18 +144,17 @@ export function LinkWriterProvider({ children }: { children: React.ReactNode }) 
   }, [setLinks]);
 
   const clear = useCallback(() => {
-    setLinks([]);
-    setPreservedRecords([]);
+    setWriter((prev) => ({ links: [], preservedRecords: [], aarEnabled: false, primaryRevision: prev.primaryRevision + 1 }));
     setCapacity(undefined);
     setSelectedLinkType(null);
-    disableAar();
-  }, [setLinks, disableAar]);
+  }, []);
 
   const value = useMemo<LinkWriterContextValue>(
     () => ({
       links,
       preservedRecords,
       aarEnabled,
+      androidPackage,
       primaryRevision,
       enableAar,
       disableAar,
@@ -167,7 +169,7 @@ export function LinkWriterProvider({ children }: { children: React.ReactNode }) 
       reorder,
       clear,
     }),
-    [links, preservedRecords, aarEnabled, primaryRevision, enableAar, disableAar, capacity, replaceFromTag, selectedLinkType, selectLinkType, addLink, updateLink, removeLink, setPrimary, reorder, clear]
+    [links, preservedRecords, aarEnabled, androidPackage, primaryRevision, enableAar, disableAar, capacity, replaceFromTag, selectedLinkType, selectLinkType, addLink, updateLink, removeLink, setPrimary, reorder, clear]
   );
 
   return <LinkWriterContext.Provider value={value}>{children}</LinkWriterContext.Provider>;

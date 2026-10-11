@@ -49,16 +49,17 @@ export function isAarRecord(record: { tnf?: number; type?: unknown }): boolean {
       record.type.every((byte, index) => byte === type.charCodeAt(index))));
 }
 
-/** 대표 URI → 나머지 URI → 보존 레코드 → 허용된 AAR 하나. */
+/** 기존 AAR은 그대로 보존하고, 명시적으로 새 AAR을 선택할 때만 교체한다. */
 export function encodeLinkMessage(urls: string[], androidPackage?: string, preservedRecords: NativeNdefRecord[] = []): number[] {
   const records = urls.map((url) => Ndef.uriRecord(url));
-  records.push(...copyNativeRecords(preservedRecords).filter((record) => !isAarRecord(record)));
+  const preserved = copyNativeRecords(preservedRecords);
+  records.push(...preserved.filter((record) => !isAarRecord(record)));
   if (androidPackage !== undefined) {
     if (!urls.length || !LINK_TYPES.some((type) => type.androidPackage === androidPackage)) {
       throw new Error('Unsupported Android package');
     }
     records.push(Ndef.androidApplicationRecord(androidPackage));
-  }
+  } else records.push(...preserved.filter(isAarRecord));
   return encodeNativeRecords(records);
 }
 

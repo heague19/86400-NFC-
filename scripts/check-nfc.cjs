@@ -179,17 +179,18 @@ async function run(settings = {}, read = false, urls = ['https://example.com'], 
   const nativeMixed = structuredClone(toNative([preserved[0], Ndef.uriRecord(mixedUrls[0]), preserved[1],
     Ndef.uriRecord(mixedUrls[1]), ...preserved.slice(2), Ndef.uriRecord(mixedUrls[2]),
     Ndef.androidApplicationRecord('org.old.one'), Ndef.androidApplicationRecord('org.old.two')]));
+  const preservedMixed = [...preserved, Ndef.androidApplicationRecord('org.old.one'), Ndef.androidApplicationRecord('org.old.two')];
   const mixedRead = await run({ records: nativeMixed }, true);
   assert.deepEqual(mixedRead.urls, mixedUrls);
-  assert.deepEqual(encodeNativeRecords(mixedRead.preservedRecords), Ndef.encodeMessage(preserved));
+  assert.deepEqual(encodeNativeRecords(mixedRead.preservedRecords), Ndef.encodeMessage(preservedMixed));
   assert.equal(mixedRead.usedBytes, encodeNativeRecords(nativeMixed).length);
   // Mutating native fields after reading cannot corrupt the editor's copy.
   nativeMixed[0].type[0] = 0; nativeMixed[0].payload[0] = 255; nativeMixed[0].id = 'ffff';
-  assert.deepEqual(encodeNativeRecords(mixedRead.preservedRecords), Ndef.encodeMessage(preserved));
+  assert.deepEqual(encodeNativeRecords(mixedRead.preservedRecords), Ndef.encodeMessage(preservedMixed));
   for (const androidPackage of [undefined, 'com.instagram.android']) {
     const edited = [mixedUrls[2], 'https://edited.example'];
     const expectedRecords = [...edited.map((u) => Ndef.uriRecord(u)), ...preserved,
-      ...(androidPackage ? [Ndef.androidApplicationRecord(androidPackage)] : [])];
+      ...(androidPackage ? [Ndef.androidApplicationRecord(androidPackage)] : preservedMixed.slice(preserved.length))];
     const expected = Ndef.encodeMessage(expectedRecords);
     for (const capacity of [expected.length - 1, expected.length, expected.length + 1]) {
       const result = await run({ status: { status: 2, capacity } }, false, edited,
@@ -214,10 +215,12 @@ async function run(settings = {}, read = false, urls = ['https://example.com'], 
   assert.deepEqual(Ndef.decodeMessage(written).map((r) => r.type), ['U', 'T', 'U']);
   assert.equal(Ndef.decodeMessage(written).some((r) => r.payload.includes('fallback'.charCodeAt(0)) &&
     r.type === 'T'), false, 'Deleted fallback URL text cannot return via preserved records');
-  // Caller-supplied stale AARs are filtered again at the shared serializer boundary.
+  // Explicit replacement keeps only the selected AAR; an ordinary save preserves existing AAR bytes.
   assert.deepEqual(aar.encodeLinkMessage(['https://a.co'], 'com.instagram.android',
     [...preserved, ...toNative([Ndef.androidApplicationRecord('org.old.one'), Ndef.androidApplicationRecord('org.old.two')])]),
     Ndef.encodeMessage([Ndef.uriRecord('https://a.co'), ...preserved, Ndef.androidApplicationRecord('com.instagram.android')]));
+  assert.deepEqual(aar.encodeLinkMessage(['https://a.co'], undefined, preservedMixed),
+    Ndef.encodeMessage([Ndef.uriRecord('https://a.co'), ...preservedMixed]));
   const invalidRecords = [null, { tnf: 7, type: 'T', id: [], payload: [] },
     { tnf: 6, type: '', id: [], payload: [] }, { tnf: 0, type: 'T', id: [], payload: [] },
     { tnf: 5, type: 'T', id: [], payload: [] }, { tnf: 2, type: '', id: [], payload: [] },

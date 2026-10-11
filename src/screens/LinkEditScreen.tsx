@@ -19,7 +19,7 @@ import { CUSTOM_LINK_TYPE } from '@/models/linkType';
 import { useLinkWriter, type WriterLink } from '@/state/LinkWriterContext';
 import { NfcService, type NfcWriteStage } from '@/nfc/nfcService';
 import { describeWarnings, warningsForLink } from '@/utils/linkWarnings';
-import { copyNativeRecords, type NativeNdefRecord } from '@/nfc/aar';
+import { aarLabel, copyNativeRecords, isAarRecord, readAarRecords, type NativeNdefRecord } from '@/nfc/aar';
 import { NdefSize } from '@/utils/ndefSize';
 import { hostOf } from '@/utils/urlNormalizer';
 import { linkTypeIcon } from '@/theme/icons';
@@ -31,7 +31,7 @@ type AarNotice = { primary: WriterLink; revision: number };
 type Props = NativeStackScreenProps<RootStackParamList, 'LinkEdit'>;
 
 export function LinkEditScreen({ navigation, route }: Props) {
-  const { links, preservedRecords, capacity, aarEnabled, primaryRevision, enableAar, disableAar, replaceFromTag, clear, removeLink, setPrimary, reorder } = useLinkWriter();
+  const { links, preservedRecords, capacity, aarEnabled, androidPackage, primaryRevision, enableAar, disableAar, replaceFromTag, clear, removeLink, setPrimary, reorder } = useLinkWriter();
   const [aarNotice, setAarNotice] = useState<AarNotice | null>(null);
   const consent = useRef<AarNotice | null>(null);
   const declineButton = useRef<View>(null);
@@ -170,9 +170,10 @@ export function LinkEditScreen({ navigation, route }: Props) {
   }, [primary, primaryRevision, dismissNotice]);
 
   const urls = links.map((l) => l.normalizedUrl);
-  const androidPackage = Platform.OS === 'android' && aarEnabled ? primary?.linkType.androidPackage : undefined;
+  const existingAars = readAarRecords(preservedRecords);
   const linkBytes = NdefSize.estimateMessageBytes(urls);
-  const aarBytes = androidPackage ? NdefSize.aarBytes(androidPackage) : 0;
+  const aarBytes = androidPackage ? NdefSize.aarBytes(androidPackage)
+    : NdefSize.estimateMessageBytes([], undefined, preservedRecords.filter(isAarRecord));
   const usedBytes = NdefSize.estimateMessageBytes(urls, androidPackage, Platform.OS === 'android' ? preservedRecords : []);
   const totalCapacity = NdefSize.isValidCapacity(capacity) ? capacity : undefined;
   const overCapacity = totalCapacity !== undefined && usedBytes > totalCapacity;
@@ -326,11 +327,15 @@ export function LinkEditScreen({ navigation, route }: Props) {
         <Text style={AppText.titleMedium}>{`현재 대표: ${primary ? primary.linkType.id === CUSTOM_LINK_TYPE.id ? hostOf(primary.normalizedUrl) : primary.linkType.label : '없음'}`}</Text>
         <View style={styles.aarToggle}>
           <Text style={AppText.bodyMedium}>안드로이드에서 앱 바로 열기</Text>
-          {primary?.linkType.androidPackage ? <Switch accessibilityLabel="안드로이드에서 앱 바로 열기"
+          {primary?.linkType.androidPackage || existingAars.length ? <Switch accessibilityLabel="안드로이드에서 앱 바로 열기"
             accessibilityState={{ checked: aarEnabled, disabled: dragging || reading || !!aarNotice }}
             value={aarEnabled} onValueChange={onAarChange} disabled={dragging || reading || !!aarNotice} />
             : <Text style={AppText.labelSmall}>사용 불가</Text>}
         </View>
+        {existingAars.length ? <Text style={AppText.bodyMedium}>{`기존 앱 설정 유지: ${existingAars.map(aarLabel).join(', ')}`}</Text> : null}
+        {existingAars.length && primary?.linkType.androidPackage &&
+          (existingAars.length !== 1 || existingAars[0].packageName !== primary.linkType.androidPackage) ?
+          <AppSecondaryButton label="대표 앱으로 변경" onPress={() => onAarChange(true)} disabled={dragging || reading || !!aarNotice} /> : null}
       </View> : null}
       <DraggableLinkList links={links} cancelToken={dragEpoch}
         onReorder={(from, to) => { if (navigation.isFocused() && !writePending.current) reorder(from, to); }}

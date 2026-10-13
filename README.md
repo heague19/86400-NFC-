@@ -13,6 +13,7 @@ NFC 태그의 링크를 읽고 편집해 오프라인에서 공유하는 React N
 - 저장 직후 같은 NFC 세션에서 다시 읽어 전체 메시지를 비교합니다. 실패 시 편집 내용을 유지하고 전체 재쓰기를 제공합니다.
 - Android 태그 인식 대기는 30초 후 종료하며, 시간 초과 안내와 수동 다시 시도를 제공합니다. 태그가 연결되면 타이머를 해제해 실제 쓰기·검증을 중단하지 않습니다. iOS는 시스템 시간 초과를 구분해 안내합니다.
 - Android에서는 기존 태그의 비URL 기록과 AAR을 보존합니다. 기존 AAR은 켜짐으로 표시하며, 직접 끄거나 대표 앱으로 교체할 때만 변경합니다.
+- 읽기·편집 화면의 "기존 기록 · 읽기 전용"에서 텍스트 내용을 확인할 수 있습니다. MIME 등은 종류·형식·크기를 표시하며 기존 기록은 링크 저장 시 함께 유지됩니다.
 - 새 Android AAR 선택은 기본 꺼짐이며, 켤 때 고지 확인을 받습니다. 새로 선택·교체한 AAR은 마지막에 최대 1개를 기록합니다.
 
 ## 실행
@@ -43,7 +44,7 @@ node scripts/check-link-presets.cjs
 node scripts/check-tag-diagnosis.cjs
 ```
 
-자동 검사는 실제 서비스·상태·화면 로직을 실행하지만 네이티브 NFC 경계는 모의합니다. 비URL·기존 AAR 보존 수정과 태그 인식 타임아웃의 실물 테스트는 다음 테스트 묶음에서 함께 진행할 예정입니다. 시간 경계 검사는 Node.js 22의 가상 타이머를 사용합니다.
+자동 검사는 실제 서비스·상태·화면 로직을 실행하지만 네이티브 NFC 경계는 모의합니다. 2026-10-13 사용자 Android 확인: 저장 후 타앱에서 기존 텍스트 유지, 읽기 전용 텍스트 표시, 자동 타임아웃·수동 재시도·뒤로가기 후 재진입 정상. MIME·손상/복수 기록·원본 AAR 전체 필드·앱 밖 실행·iOS는 이 보고로 실물 확인 완료 처리하지 않습니다. 시간 경계 검사는 Node.js 22의 가상 타이머를 사용합니다.
 
 ## 구조와 기준 문서
 
@@ -58,6 +59,6 @@ node scripts/check-tag-diagnosis.cjs
 | `android/` | Android 네이티브 프로젝트 |
 | `scripts/` | 자동 회귀 검사 |
 
-사양은 [HANDOFF.md](docs/HANDOFF.md), [DECISIONS.md](docs/DECISIONS.md), [VERIFICATION.md](docs/VERIFICATION.md), [SPEC-T6-AAR.md](docs/SPEC-T6-AAR.md)를 기준으로 합니다. 구현·사용자 확인 이력은 [STATUS.md](docs/STATUS.md)에서 관리하며, 보존 수정의 실기기 확인은 아직 완료 처리하지 않았습니다.
+사양은 [HANDOFF.md](docs/HANDOFF.md), [DECISIONS.md](docs/DECISIONS.md), [VERIFICATION.md](docs/VERIFICATION.md), [SPEC-T6-AAR.md](docs/SPEC-T6-AAR.md)를 기준으로 합니다. 구현·사용자 확인 이력과 남은 실물 검증 범위는 [STATUS.md](docs/STATUS.md)에서 관리합니다.
 
 화면은 NFC 네이티브 API를 직접 호출하지 않고 `NfcService`를 사용합니다. 새 의존성·플랫폼 확대는 별도 검토하며 민감정보는 커밋하지 않습니다.

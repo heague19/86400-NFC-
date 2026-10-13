@@ -11,6 +11,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppPrimaryButton, AppSecondaryButton } from '@/components/AppButton';
 import { AppInfoCard } from '@/components/AppCards';
+import { PreservedRecords } from '@/components/PreservedRecords';
 import { DraggableLinkList } from '@/components/DraggableLinkList';
 import { WriteWaitingScreen } from '@/screens/WriteWaitingScreen';
 import { WriteFailureScreen } from '@/screens/WriteFailureScreen';
@@ -415,6 +416,7 @@ export function LinkEditScreen({ navigation, route }: Props) {
           );
         }}
         footer={<>
+            <PreservedRecords records={preservedRecords} editing />
             <AppSecondaryButton label="링크 추가" onPress={onAddLink} />
 
             {overCapacity ? (

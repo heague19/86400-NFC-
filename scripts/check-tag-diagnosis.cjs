@@ -183,6 +183,8 @@ const imports = {
   '@/theme/icons': { APP_ICONS: { nfc: 'nfc', edit: 'edit', shield: 'shield' }, APP_LOGO: {}, linkTypeIcon: () => 1 },
   '@/theme/tokens': tokens,
 };
+imports['@/utils/preservedRecordDisplay'] = load('src/utils/preservedRecordDisplay.ts', { '../nfc/aar': aarModule });
+imports['@/components/PreservedRecords'] = load('src/components/PreservedRecords.tsx', imports);
 for (const name of ['WriteWaiting', 'WriteFailure']) {
   imports[`@/screens/${name}Screen`] = load(`src/screens/${name}Screen.tsx`, imports);
 }
@@ -197,7 +199,7 @@ function nodes(tree) {
   if (Array.isArray(tree)) return tree.flatMap(nodes);
   if (tree.type === 'Modal' && !tree.props.visible) return [];
   if (tree.type === 'DraggableLinkList') return [tree, ...nodes(tree.props.header), ...tree.props.links.flatMap((l, i) => nodes(tree.props.renderRow(l, i))), ...nodes(tree.props.footer)];
-  if (typeof tree.type === 'function' && tree.type.name.endsWith('Screen')) return [tree, ...nodes(tree.type(tree.props))];
+  if (typeof tree.type === 'function' && (tree.type.name.endsWith('Screen') || tree.type.name === 'PreservedRecords')) return [tree, ...nodes(tree.type(tree.props))];
   return [tree, ...nodes(tree.props?.children)];
 }
 const textOf = (tree) => nodes(tree).filter((n) => n.type === 'Text').flatMap((n) => n.props.children).join(' ').replace(/\s+/g, ' ');

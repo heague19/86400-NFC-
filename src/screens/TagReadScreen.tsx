@@ -12,6 +12,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppPrimaryButton, AppSecondaryButton } from '@/components/AppButton';
 import { AppInfoCard } from '@/components/AppCards';
+import { PreservedRecords } from '@/components/PreservedRecords';
 import { AppCapacityGauge } from '@/components/AppCapacityGauge';
 import { AppRingBadge } from '@/components/AppRingBadge';
 import { detectLinkTypeFromUrl } from '@/models/linkType';
@@ -107,7 +108,7 @@ export function TagReadScreen({ navigation }: Props) {
           aarRecords: result.aarRecords,
           usedBytes: result.usedBytes,
         });
-        if (!result.ok) setErrorMsg(result.message);
+        if (!result.ok && result.reason !== 'no_url') setErrorMsg(result.message);
       } else {
         setErrorMsg(result.message);
       }
@@ -250,8 +251,11 @@ export function TagReadScreen({ navigation }: Props) {
               );
             })}
 
-            <View style={{ height: AppSpacing.sm }} />
-            <Text style={styles.hint}>탭하면 링크 열기 · 길게 누르면 주소 복사</Text>
+            {tag.urls.length ? <>
+              <View style={{ height: AppSpacing.sm }} />
+              <Text style={styles.hint}>탭하면 링크 열기 · 길게 누르면 주소 복사</Text>
+            </> : <AppInfoCard title="링크 없음" message="태그를 읽었습니다. 저장된 링크는 없습니다." variant="neutral" />}
+            <PreservedRecords records={tag.preservedRecords} />
             {tag.aarRecords?.map((record, index) => (
               <View key={index} style={[styles.linkCard, styles.aarCard]}>
                 <Text style={styles.linkTitle}>앱 바로 열기 레코드</Text>

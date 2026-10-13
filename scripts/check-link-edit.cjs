@@ -122,6 +122,8 @@ const imports = {
   '@/theme/icons': { APP_ICONS: {}, APP_LOGO: {}, linkTypeIcon: () => 1 },
   '@/theme/tokens': tokens,
 };
+imports['@/utils/preservedRecordDisplay'] = load('src/utils/preservedRecordDisplay.ts', { '../nfc/aar': aar });
+imports['@/components/PreservedRecords'] = load('src/components/PreservedRecords.tsx', imports);
 for (const name of ['WriteWaiting', 'WriteFailure']) {
   imports[`@/screens/${name}Screen`] = load(`src/screens/${name}Screen.tsx`, imports);
 }
@@ -135,7 +137,7 @@ function nodes(tree) {
   if (Array.isArray(tree)) return tree.flatMap(nodes);
   if (tree.type === 'Modal' && !tree.props.visible) return [];
   if (tree.type === 'DraggableLinkList') return [tree, ...nodes(tree.props.header), ...tree.props.links.flatMap((l, i) => nodes(tree.props.renderRow(l, i))), ...nodes(tree.props.footer)];
-  if (typeof tree.type === 'function' && tree.type.name.endsWith('Screen')) return [tree, ...nodes(tree.type(tree.props))];
+  if (typeof tree.type === 'function' && (tree.type.name.endsWith('Screen') || tree.type.name === 'PreservedRecords')) return [tree, ...nodes(tree.type(tree.props))];
   return [tree, ...nodes(tree.props?.children)];
 }
 
@@ -845,6 +847,85 @@ const invalidCapacities = [undefined, null, 0, -1, NaN, Infinity, 1.5, '144', Nu
   }).NfcService;
   readResult = (signal) => actualService.readUrl(signal);
   writeResult = (urls, opts) => actualService.writeUrls(urls, opts);
+  // Execute both real screens + shared display + service/provider; only NFC transport is mocked.
+  const textRecord = (payload) => ({ tnf: 1, type: 'T', id: [0, 255], payload });
+  const utf16 = (text, littleEndian = false, bom = false) => {
+    const bytes = [...Buffer.from(text, 'utf16le')];
+    if (!littleEndian) for (let i = 0; i < bytes.length; i += 2) [bytes[i], bytes[i + 1]] = [bytes[i + 1], bytes[i]];
+    return textRecord([0x82, 107, 111, ...(bom ? littleEndian ? [255, 254] : [254, 255] : []), ...bytes]);
+  };
+  const memo = Ndef.textRecord('안녕하세요 · 日本語 · مرحبا · 😀\n두 번째 줄', 'ko');
+  const displayUrl = 'https://display.example/Keep';
+  const oldAar = Ndef.androidApplicationRecord('com.instagram.android');
+  const displayCases = [
+    ['text-only', [memo], ['안녕하세요 · 日本語 · مرحبا · 😀\n두 번째 줄', 'UTF-8 · ko'], 0],
+    ['URL+duplicate-text', [Ndef.uriRecord(displayUrl), memo, memo, oldAar], ['안녕하세요 · 日本語 · مرحبا · 😀\n두 번째 줄'], 1],
+    ['UTF-16BE', [utf16('한글 😀')], ['한글 😀', 'UTF-16BE · ko'], 0],
+    ['UTF-16BE BOM', [utf16('한글 😀', false, true)], ['한글 😀', 'UTF-16BE'], 0],
+    ['UTF-16LE BOM', [utf16('한글 😀', true, true)], ['한글 😀', 'UTF-16LE'], 0],
+    ['empty', [Ndef.textRecord('', 'en'), Ndef.textRecord('  \n', 'en')], ['텍스트 내용이 비어 있습니다.'], 0],
+    ['damaged', [textRecord([]), textRecord([5, 101]), textRecord([0, 0xc0, 0xaf]),
+      textRecord([0x80, 0]), textRecord([0x80, 0xd8, 0]), textRecord([0x80, 0xdc, 0]),
+      textRecord([0x40]), textRecord([0, 0])], ['텍스트 내용을 해석할 수 없습니다.'], 0],
+    ['MIME+unknown+URI', [Ndef.mimeMediaRecord('application/octet-stream', [0, 255, 128]),
+      { tnf: 5, type: '', id: [255], payload: [0, 128] }, Ndef.uriRecord('mailto:person@example.com'),
+      { tnf: 1, type: 'X', id: [], payload: [] }, { tnf: 3, type: 'urn:example', id: [], payload: [42] },
+      { tnf: 4, type: 'example.com:custom', id: [], payload: [42] }],
+      ['MIME 기록', 'application/octet-stream', '알 수 없는 기록', 'URI 기록', '외부 형식 기록', '절대 URI 기록'], 0],
+    ['long text', [Ndef.textRecord('긴 내용 '.repeat(80) + '마지막 줄', 'ko')], ['마지막 줄'], 0],
+    ['URL fallback', [Ndef.textRecord(displayUrl)], [], 1],
+    ['AAR-only', [oldAar, oldAar], [], 0],
+    ['blank', [], [], 0],
+    ['TNF_EMPTY-only', [{ tnf: 0, type: '', id: [], payload: [] }], [], 0],
+  ];
+  const recordCards = (h) => nodes(h.editor.tree).filter((n) => n.type === 'AppInfoCard' && /^\d+\. /.test(n.props.title));
+  for (const [label, original, expected, linkCount] of displayCases) {
+    for (const entry of ['direct', 'view']) {
+      nativeCapacity = 4096;
+      nativeTag = { ndefMessage: original.map((r) => ({ ...structuredClone(r),
+        type: Ndef.util.stringToBytes(r.type), id: Ndef.util.bytesToHexString(r.id) })) };
+      const nativeSnapshot = structuredClone(nativeTag);
+      const raw = aar.encodeNativeRecords(original);
+      h = new Harness();
+      if (entry === 'direct') h.enterEdit();
+      else h.find('AppActionCard', (p) => p.title === '링크 보기').onPress();
+      await h.settle();
+      const assertDisplay = () => {
+        const cards = recordCards(h);
+        const displayed = [...cards.map((n) => `${n.props.title}\n${n.props.message}`),
+          ...nodes(h.editor.tree).filter((n) => n.type === 'Text').flatMap((n) => n.props.children)].join('\n');
+        for (const value of expected) assert.ok(displayed.includes(value), `${entry}/${label}: visible ${value}`);
+        const preserved = original.filter((r) => r.tnf !== 0 && !aar.isAarRecord(r) && label !== 'URL fallback' &&
+          (r.type !== 'U' || label === 'MIME+unknown+URI'));
+        assert.equal(cards.length, preserved.length, `${entry}/${label}: every preserved nonempty non-AAR record is visible, duplicates retained`);
+        for (const [i, r] of preserved.entries()) {
+          assert.ok(cards[i].props.message.includes(`레코드 ${aar.encodeNativeRecords([r]).length} B · 내용 ${r.payload.length} B`));
+          if (label === 'damaged' || label === 'empty') assert.ok(cards[i].props.message.includes(expected[0]));
+        }
+        const subtree = nodes(h.editor.tree).find((n) => n.type?.name === 'PreservedRecords');
+        assert.ok(nodes(subtree).every((n) => n.type !== 'Pressable' && !n.props?.onPress && !n.props?.onLongPress && !n.props?.onChangeText), 'Preserved content has no actions');
+        const expectedBytes = h.route.name === 'LinkEdit' && label === 'URL fallback'
+          ? aar.encodeLinkMessage([displayUrl]).length : raw.length;
+        assert.equal(h.find('AppCapacityGauge').used, expectedBytes, `${entry}/${label}: existing serialized usage`);
+        assert.equal(h.find('AppCapacityGauge').linkCount, linkCount);
+        assert.equal(h.find('AppCapacityGauge').total, 4096);
+        assert.equal(nodes(h.editor.tree).some((n) => n.props?.title === '읽기 실패'), false);
+      };
+      assertDisplay();
+      if (entry === 'view') {
+        assert.equal(nodes(h.editor.tree).filter((n) => n.type === 'Pressable' && n.props.onLongPress).length, linkCount);
+        const before = reads; h.press('수정하기'); await h.settle(); assert.equal(reads, before);
+        assertDisplay();
+      }
+      assert.deepEqual(nativeTag, nativeSnapshot, `${entry}/${label}: native fields/bytes unchanged by display`);
+      assert.deepEqual(aar.encodeLinkMessage(contextUrls(h), undefined, h.context.preservedRecords),
+        label === 'URL fallback' ? aar.encodeLinkMessage([displayUrl]) : raw);
+      if (recordCards(h).length) assert.ok(nodes(h.editor.tree).some((n) => n.type === 'Text' && n.props.children.includes('이 기록은 수정·삭제할 수 없으며, 링크를 저장할 때 그대로 유지됩니다.')));
+      if (label === 'URL+duplicate-text') assert.equal(recordCards(h).length, 2);
+      h.dispose();
+    }
+  }
+  console.log('PASS: actual preserved-record screens/service/provider: multilingual UTF-8, UTF-16 BE/LE/BOM/surrogates, empty/damaged/long text, MIME/unknown/URI/external, duplicates, AAR/URL exclusions, EMPTY hidden, no actions/failure, unchanged native bytes/capacity/count and read->edit without reread');
   // A5: actual native service -> both entry routes -> provider/input -> failed whole rewrite/continuation.
   const a5Url = 'https://source.example/Keep?flag#Case';
   const a5Memo = Ndef.textRecord('memo', 'en', [0, 255]);
@@ -867,8 +948,10 @@ const invalidCapacities = [undefined, null, 0, -1, NaN, Infinity, 1.5, '144', Nu
       else h.find('AppActionCard', (p) => p.title === '링크 보기').onPress();
       h.flush(); await h.settle();
       if (pathName === 'view') {
-        if (!originalUrls.length) assert.ok(h.find('AppInfoCard', (p) => p.message?.includes('URL을 찾지 못')),
-          'Link view retains no_url guidance for non-URL-only tags');
+        if (!originalUrls.length) {
+          assert.ok(h.find('AppInfoCard', (p) => p.title === '링크 없음' && p.variant === 'neutral'));
+          assert.equal(nodes(h.editor.tree).some((n) => n.props?.title === '읽기 실패'), false);
+        }
         const before = reads; h.press('수정하기'); await h.settle(); assert.equal(reads, before);
       }
       const retainedKey = h.route.key, entryReads = reads;

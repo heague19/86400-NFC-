@@ -80,7 +80,7 @@ Android 권한 정리 Codex `65c4e61` 반영·2026-11-07 사용자 확인 완료
 2026-10-28 기준 폴더 typecheck 오류 0건·회귀 검사 5종 PASS, Android debug 빌드 및 debug/release 패키지 매니페스트·debug APK 권한 검사 PASS.
 같은 날 기존 데이터를 유지해 폰을 업데이트했으며, 2026-11-07 SM_S921N에서 실제 태그 읽기→내용 변경 없는 쓰기→검증 재읽기 및 별도 재읽기 확인.
 링크 3개·대표 GitHub·사용량 67 / 137 B 유지, 별도 읽기의 시간 초과 후 수동 재시도도 성공함.
-이번 태그에는 비URL 기록·AAR이 없어 해당 보존 동작을 새로 실물 검증한 것으로 처리하지 않음. iOS·release APK 실행도 미확인 유지.
+이번 태그에는 비URL 기록·AAR이 없어 해당 보존 동작을 새로 실물 검증한 것으로 처리하지 않음. 당시 release APK 실행은 미확인(아래 후속 검증 참고), iOS는 미확인 유지.
 `준비-2`는 기존 82개 조항 밖의 준비 항목이므로 집계는 ✅ 79 / 🟡 2 / ⬜ 1 / ❌ 0 유지. 의존성 변경·push 없음.
 
 **남은 조항:** iOS 실기기 확인이 필요한 타임아웃(`G2` 🟡) 및 iOS AAR(`M5` ⬜ / `A8` 🟡).
@@ -89,7 +89,13 @@ Android 권한 정리 Codex `65c4e61` 반영·2026-11-07 사용자 확인 완료
 서비스명·6종 전체·미설치 앱·Android16 인텐트 우선순위의 개별 비교 결과는 미보고. 잠긴/비NDEF 태그 안내와 실패 화면→진단 이동도 미확인 유지.
 기존 기능 조항의 상태는 바뀌지 않아 집계 ✅ 79 / 🟡 2 / ⬜ 1 / ❌ 0 유지.
 
-**Android 계획 작업:** `준비-2`까지 완료. 남은 실물 검증 후보는 서비스별 앱 밖 AAR 실행·미설치 앱/Android16 우선순위,
+Android release 실행 검증 완료(2026-11-07, 코디네이터 실기기 확인). 기준 커밋 `f60904a`의 release APK를 기존 테스트 서명으로 빌드·설치함.
+Metro 중지·USB reverse 없음 상태에서 cold 실행, 실제 태그 읽기→동일 내용 쓰기→검증 재읽기 및 새 세션 재읽기 성공.
+이번 태그는 GitHub·Instagram 2개, 대표 GitHub, AAR 꺼짐·사용량 46 / 137 B이며 저장 전후 유지됨.
+실제 release APK의 내장 JS 번들·NFC/AndroidX signature 권한·개발 도구 제외·서명 일치를 검사함. 코드·의존성·네이티브 설정 변경 없음.
+스토어 배포 서명키는 미설정이며, 이번 APK는 테스트 서명의 release 실행 검증본임. 82개 조항 집계는 ✅ 79 / 🟡 2 / ⬜ 1 / ❌ 0 유지.
+
+**Android 계획 작업:** `준비-2` 및 release 기본 실행 검증까지 완료. 남은 실물 검증 후보는 서비스별 앱 밖 AAR 실행·미설치 앱/Android16 우선순위,
 잠긴/비NDEF 태그 및 실패 화면→진단 이동 등. iOS는 기존 지시에 따라 건너뛰며, 다음 묶음은 사용자 지시 전에는 시작하지 않음.
 형식이 깨진 기타 URL은 경고와 함께 저장할 수 있으나 기존 읽기 검증에서 제외될 수 있음. 비http 스킴 차단(`K9`) 유지.
 
@@ -417,6 +423,7 @@ ver2는 **홈 + 3페이지**이고, 현재 `navigation.ts`에는 라우트 9개�
   native type/id 형태를 맞춘 뒤 `Ndef.encodeMessage` 결과를 길이·각 바이트로 비교 · `nfcService.ts:131-147,226-239`.
   중복·순서·tnf/type/id/payload를 보존하며 재읽기/직렬화 오류도 `verify_mismatch`로 처리.
   할 일: 없음. 1-4 완료 (`228ef0e`), 회귀 검사 통과 및 사용자 실기기 확인 완료(2026-10-02). iOS 실측은 미확인.
+  2026-11-07 테스트 서명 release APK에서도 Metro 없이 쓰기→검증 재읽기 성공, 새 세션 재읽기로 링크 2개·46 / 137 B 유지 확인.
 
 ### H. §4.8 완료 (5)
 
@@ -573,6 +580,7 @@ ver2는 **홈 + 3페이지**이고, 현재 `navigation.ts`에는 라우트 9개�
   `NDEF_DISCOVERED`·`TECH_DISCOVERED`·`TAG_DISCOVERED` 전부 0건.
   할 일: 없음. `준비-2` 권한 정리(`65c4e61`) 후 debug/release 패키지 매니페스트·debug APK의 필터와 권한 검사를 통과함.
   공통 선언은 NFC, 개발용 INTERNET·SYSTEM_ALERT_WINDOW는 debug로 제한. 2026-11-07 폰 읽기·쓰기·재읽기 사용자 확인 완료.
+  후속 실제 release APK에도 같은 검사 함수를 적용해 권한·인텐트·개발 설정 제외를 확인하고, Metro 없이 폰 실행·읽기·쓰기·재읽기까지 검증함.
   `android/`는 재생성하지 않고 직접 수정하며, 다음 매니페스트 변경에서도 `scripts/check-android-permissions.py`로 필터·권한을 함께 확인.
 - [x] **L6** ✅ `§6 · T6a` — 새 AAR 복수 생성 / 임의 패키지명 지정 금지
   현재: 신규·교체는 허용된 대표 프리셋 패키지 1개만 마지막에 기록하며 임의 패키지명 생성 UI 없음.
@@ -853,6 +861,21 @@ iOS 결과가 없다는 사용자 보고 후 Android만 진행하도록 승인�
 기준 폴더에서 병합 후 typecheck 오류 0건·회귀 검사 5종 PASS. 폰 최신 JS 반영·홈 정상 실행 및 사용자 텍스트 표시 확인.
 이 보존·표시 작업의 의존성·네이티브 변경·push 없음. 당시 집계 ✅ 79 / 🟡 2 / ⬜ 1 / ❌ 0 유지. 후속 `준비-2` 권한 정리는 위 완료 기록 참고.
 
+### 추가 검증 — Android release 기본 실행 (2026-11-07)
+
+- [x] **release APK 빌드·설치** — `f60904a` 기준, arm64-v8a, versionCode 4 / 1.0.0. 기존 앱과 같은 테스트 서명으로 데이터 유지 업데이트.
+  저장소의 release 서명키가 없어 최초 `packageRelease`는 실패했고, 명령행 `android.injected.signing.*`에 기존 debug 서명을 지정한 재빌드는 성공(22초).
+  저장소 서명 설정·코드·의존성 변경 없음. 스토어 제출용 서명본은 아니며 배포 서명키 준비는 별도.
+- [x] **실제 APK 확인** — `apksigner verify` 및 기존 설치본과 인증서 일치, 내장 JS 번들(1,313,428 B)·arm64 라이브러리 확인.
+  기존 `check-android-permissions.py`의 `check_manifest(..., False, ...)`를 실제 release APK에 적용해 권한·SDK·화면·인텐트·개발 도구 제외 검사 PASS.
+  권한은 NFC + AndroidX signature 권한이며 INTERNET·SYSTEM_ALERT_WINDOW·저장소·진동 권한 없음.
+- [x] **개발 서버 없는 실기기 검증** — SM_S921N에서 Metro 중지·8081 응답 없음·USB reverse 없음 상태로 cold 실행·홈 표시 정상.
+  실제 태그 읽기→링크/설정 변경 없는 쓰기→검증 재읽기 성공. 새 읽기 세션에서 태그 미감지 시간 초과 후 수동 재시도·재접촉으로 읽기 성공.
+  저장 전후 GitHub·Instagram 2개, 대표 GitHub, AAR 꺼짐, 46 / 137 B 유지. 최근 앱 로그에서 크래시·권한 오류 없음.
+  폰에는 이 release 검증본을 유지하고 Metro는 중지함. 비URL/AAR 보존 재검사·잠긴/비NDEF 태그·실패→진단 이동·iOS는 이번 범위 밖.
+
+이번 검증은 기존 조항의 완료 상태를 바꾸지 않음. 집계 ✅ 79 / 🟡 2 / ⬜ 1 / ❌ 0 유지. push 없음.
+
 ## 5. 정적으로 판정 불가
 
 코드만 봐서는 알 수 없고 **실물·실기기에서만** 확인되는 항목입니다.
@@ -874,7 +897,7 @@ iOS 결과가 없다는 사용자 보고 후 Android만 진행하도록 승인�
 최종 release 패키지 매니페스트: NFC + AndroidX의 `com.palyuksa.palyuksa.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`(signature).
 최종 debug 패키지 매니페스트·APK: 위 권한 + INTERNET·SYSTEM_ALERT_WINDOW. 저장소·진동 권한 없음.
 `scripts/check-android-permissions.py`의 실제 산출물 검사 PASS 및 폰 실제 읽기·쓰기·재읽기·시간 초과 후 재시도 정상 확인.
-`android/` 재생성·의존성 변경 없음. release APK의 실제 실행과 iOS는 이번 확인에 포함하지 않음.
+`android/` 재생성·의존성 변경 없음. 후속 테스트 서명 release APK도 실제 권한 검사 및 Metro 없는 폰 읽기·쓰기·재읽기 검증 완료(4장 추가 검증 참고). iOS는 미확인 유지.
 
 > **참고.** 2026-09-20 기준 `npm run typecheck` = **에러 0건**(`strict: true`)이며,
 > 사용자가 실기기에 설치해 기본 읽기·쓰기 동작을 확인했습니다.

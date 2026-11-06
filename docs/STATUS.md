@@ -6,7 +6,7 @@
 > **기준선:** `HANDOFF.md` · `DECISIONS.md` · `VERIFICATION.md` · `SPEC-T6-AAR.md` 4개.
 > `README.md`는 기준선이 아니라 **대조 대상**입니다. ver2 갱신 완료·6장 R1~R5 반영 확인(2026-10-13).
 >
-> 작성 2026-09-20 · 2026-09-30 결정 반영 · 2026-10-01 작업 순서 보정 · 2026-10-02 0·1단계 · 2026-10-04 2단계 · 3-1~3-4 사용자 확인 반영 · 2026-10-05 3-5~3-8 · 2026-10-08 3-9~3-12 · 4단계 사용자 확인 반영 · 2026-10-09 5단계 · Android 시스템 뒤로가기 · 6단계 Android 구현 및 AAR 카드 · 링크 보기 자동 읽기 사용자 확인 반영 · 2026-10-13 기존 기록 보존·읽기 전용 표시 및 Android 타임아웃 사용자 확인 반영
+> 작성 2026-09-20 · 2026-09-30 결정 반영 · 2026-10-01 작업 순서 보정 · 2026-10-02 0·1단계 · 2026-10-04 2단계 · 3-1~3-4 사용자 확인 반영 · 2026-10-05 3-5~3-8 · 2026-10-08 3-9~3-12 · 4단계 사용자 확인 반영 · 2026-10-09 5단계 · Android 시스템 뒤로가기 · 6단계 Android 구현 및 AAR 카드 · 링크 보기 자동 읽기 사용자 확인 반영 · 2026-10-13 기존 기록 보존·읽기 전용 표시 및 Android 타임아웃 사용자 확인 반영 · 2026-11-07 Android 권한 정리 실기기 확인 반영
 
 ---
 
@@ -75,9 +75,18 @@ iOS TNF_EXTERNAL 쓰기, 앱 밖 태깅의 AAR 디스패치, 미설치 앱/Andro
 병합 후 기준 폴더 typecheck 오류 0건·회귀 검사 5종 PASS, 최신 JS를 폰에 반영하고 홈 정상 실행 확인.
 MIME·손상/복수 기록·전체 AAR 원본 필드·앱 밖 실행·iOS는 이 사용자 보고로 실물 확인 완료 처리하지 않음.
 
+Android 권한 정리 Codex `65c4e61` 반영·2026-11-07 사용자 확인 완료(`준비-2`).
+공통 매니페스트는 NFC만 선언하고 개발용 INTERNET·SYSTEM_ALERT_WINDOW는 debug에만 유지함.
+2026-10-28 기준 폴더 typecheck 오류 0건·회귀 검사 5종 PASS, Android debug 빌드 및 debug/release 패키지 매니페스트·debug APK 권한 검사 PASS.
+같은 날 기존 데이터를 유지해 폰을 업데이트했으며, 2026-11-07 SM_S921N에서 실제 태그 읽기→내용 변경 없는 쓰기→검증 재읽기 및 별도 재읽기 확인.
+링크 3개·대표 GitHub·사용량 67 / 137 B 유지, 별도 읽기의 시간 초과 후 수동 재시도도 성공함.
+이번 태그에는 비URL 기록·AAR이 없어 해당 보존 동작을 새로 실물 검증한 것으로 처리하지 않음. iOS·release APK 실행도 미확인 유지.
+`준비-2`는 기존 82개 조항 밖의 준비 항목이므로 집계는 ✅ 79 / 🟡 2 / ⬜ 1 / ❌ 0 유지. 의존성 변경·push 없음.
+
 **남은 조항:** iOS 실기기 확인이 필요한 타임아웃(`G2` 🟡) 및 iOS AAR(`M5` ⬜ / `A8` 🟡).
 `G2`의 공통 오류 분류·재시도 UI는 구현되어 ⬜→🟡로 정정하며 iOS 완료 체크는 올리지 않음.
-**다음 Android 작업:** `준비-2` 매니페스트 권한 검토·빌드/실기기 검증. 사용자 "다음" 전에는 시작하지 않음.
+**Android 계획 작업:** `준비-2`까지 완료. 남은 실물 검증 후보는 앱 밖 AAR 실행·미설치 앱/Android16 우선순위,
+잠긴/비NDEF 태그 및 실패 화면→진단 이동 등. iOS는 기존 지시에 따라 건너뛰며, 다음 묶음은 사용자 지시 전에는 시작하지 않음.
 형식이 깨진 기타 URL은 경고와 함께 저장할 수 있으나 기존 읽기 검증에서 제외될 수 있음. 비http 스킴 차단(`K9`) 유지.
 
 **판정 3건은 2026-09-20 전부 확정** — 2장 참고. 2026-09-30의 용량 표시·실패 화면·버튼 문구·앱 이름 결정도 반영됨.
@@ -556,10 +565,11 @@ ver2는 **홈 + 3페이지**이고, 현재 `navigation.ts`에는 라우트 9개�
   현재: 없음
   할 일: 없음.
 - [x] **L5** ✅ `§6 · T5` — **`NDEF_DISCOVERED` 인텐트 필터 절대 등록 금지**
-  현재: `AndroidManifest.xml:20-23` MAIN/LAUNCHER, `:24-29` 앱 자체 스킴(`com.palyuksa.palyuksa`)의 VIEW.
-  `NDEF_DISCOVERED`·`TECH_DISCOVERED`·`TAG_DISCOVERED` 전부 0건
-  할 일: 없음. `android/`는 재생성하지 않고 직접 고치므로(5장 7번),
-  **매니페스트를 고칠 때 이 필터가 들어가지 않는지만 확인.**
+  현재: `android/app/src/main/AndroidManifest.xml`에 MAIN/LAUNCHER와 앱 자체 스킴(`com.palyuksa.palyuksa`)의 VIEW만 등록.
+  `NDEF_DISCOVERED`·`TECH_DISCOVERED`·`TAG_DISCOVERED` 전부 0건.
+  할 일: 없음. `준비-2` 권한 정리(`65c4e61`) 후 debug/release 패키지 매니페스트·debug APK의 필터와 권한 검사를 통과함.
+  공통 선언은 NFC, 개발용 INTERNET·SYSTEM_ALERT_WINDOW는 debug로 제한. 2026-11-07 폰 읽기·쓰기·재읽기 사용자 확인 완료.
+  `android/`는 재생성하지 않고 직접 수정하며, 다음 매니페스트 변경에서도 `scripts/check-android-permissions.py`로 필터·권한을 함께 확인.
 - [x] **L6** ✅ `§6 · T6a` — 새 AAR 복수 생성 / 임의 패키지명 지정 금지
   현재: 신규·교체는 허용된 대표 프리셋 패키지 1개만 마지막에 기록하며 임의 패키지명 생성 UI 없음.
   외부 태그의 복수·미등록 기존 AAR은 원본 보존·읽기/진단 표시 대상(`9f7e384`); 기존 기록 보존은 새 AAR 생성과 구분.
@@ -631,7 +641,12 @@ J1 (③ 독립 진입 + 홈 ③ 버튼, 5-1) ──▶ D8 · I4 (①·②에서 
     keytool -genkeypair -v -keystore android/app/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
     ```
   - 폰에 같은 `applicationId`(`com.palyuksa.palyuksa`)의 **다른 서명 빌드**가 깔려 있으면 먼저 삭제 — 서명이 달라 설치 실패
-- [ ] **준비-2** 5장 7번 — 매니페스트 권한 5개 확인 (빌드가 돼야 확인 가능)
+- [x] **준비-2** 5장 7번 — 매니페스트 권한 검토·정리 완료(`65c4e61`), 2026-11-07 사용자 실기기 확인 완료(Android).
+  공통 매니페스트에서 INTERNET·READ/WRITE_EXTERNAL_STORAGE·SYSTEM_ALERT_WINDOW·VIBRATE 제거, NFC 유지.
+  INTERNET·SYSTEM_ALERT_WINDOW는 개발용 debug에만 유지. 최종 release 패키지 매니페스트는 NFC와 AndroidX signature 권한만 요청.
+  기준 폴더 typecheck 오류 0건·회귀 검사 5종 PASS, debug 빌드·debug/release 패키지 매니페스트 및 debug APK 검사 PASS(2026-10-28).
+  폰 업데이트 후 실제 태그 읽기·동일 내용 쓰기·검증 재읽기·별도 재읽기와 시간 초과 후 재시도 성공.
+  링크 3개·대표 GitHub·67 / 137 B 유지. 이번 태그의 비URL/AAR 보존, release APK 실행·iOS 검증은 포함하지 않음.
 
 ### 0단계 — 삭제 (v1 잔재 제거)
 
@@ -828,7 +843,7 @@ iOS 결과가 없다는 사용자 보고 후 Android만 진행하도록 승인�
   이번 표시 수정은 AAR 로직을 변경하지 않았으며 전체 원본 필드·앱 밖 디스패치 실물 검증을 새로 완료 처리하지 않음.
 
 기준 폴더에서 병합 후 typecheck 오류 0건·회귀 검사 5종 PASS. 폰 최신 JS 반영·홈 정상 실행 및 사용자 텍스트 표시 확인.
-의존성·네이티브 변경·push 없음. 집계 ✅ 79 / 🟡 2 / ⬜ 1 / ❌ 0. 다음은 `준비-2` 권한 검토이며 아직 시작하지 않음.
+이 보존·표시 작업의 의존성·네이티브 변경·push 없음. 당시 집계 ✅ 79 / 🟡 2 / ⬜ 1 / ❌ 0 유지. 후속 `준비-2` 권한 정리는 위 완료 기록 참고.
 
 ## 5. 정적으로 판정 불가
 
@@ -843,19 +858,19 @@ iOS 결과가 없다는 사용자 보고 후 Android만 진행하도록 승인�
 | 4 | iOS Core NFC가 AAR(TNF_EXTERNAL) 레코드를 쓸 수 있는지 | **iOS 6단계 선행** | 미확인. 사용자 승인으로 Android만 먼저 구현, iOS 토글 숨김 (`M5` · T6g 전제) |
 | 5 | Android 16 `ACTION_VIEW` 전환에서 AAR 우선순위 (미문서화) | **6단계** | 실패해도 AAR만 무시되고 링크는 열림 — 안전 |
 | 6 | GitHub · LinkedIn · X 패키지명 공식 재확인 (현재 Play Store 리스팅만) | **6-1** | 초기값 꺼짐이라 지금은 무영향 |
-| 7 | `AndroidManifest.xml:2,4,5,6,7`의 `INTERNET` · `READ/WRITE_EXTERNAL_STORAGE` · `SYSTEM_ALERT_WINDOW` · `VIBRATE` | **준비-2** | §6·S4("외부 전송 없음")와 긴장 관계 |
+| 7 | **확인 완료:** 공통 NFC 유지·저장소/진동 권한 제거·개발용 INTERNET/오버레이 debug 한정 (`65c4e61`, 실기기 2026-11-07) | **준비-2 완료** | 빌드 산출물 권한 검사 및 폰 읽기·쓰기·재읽기 정상 |
 | 8 | `removeTrackingParams`의 URL 재작성이 실기기에서도 PC 테스트와 같은지 (2장 판정 2) | **1단계** | 기타 링크가 입력과 다르게 저장됨 |
 
-**7번 보충 (2026-09-30 갱신).** `app.json`에는 `android.permission.NFC`만 선언돼 있고(`app.json:25`),
-코드에서 이 5개 권한을 쓰는 곳은 없습니다. **출처는 Expo 기본 템플릿**입니다 (SDK 52 공식 템플릿과 대조) —
-`INTERNET`은 템플릿 기본이고, 나머지 4개는 템플릿이 "필요 없으면 지우라"고 표시해 둔 선택 권한입니다.
-`SYSTEM_ALERT_WINDOW`는 개발용 매니페스트(`android/app/src/debug/AndroidManifest.xml:4`)에도 따로 있습니다.
-→ `android/`에는 손으로 고친 설정이 있어 **재생성하지 않으므로**, 권한을 줄일 때는 `AndroidManifest.xml`을 **직접** 고칩니다.
-선택 권한 4개를 지워도 되는지, `INTERNET`이 개발용 빌드(Metro 연결)에 필요한지는 **준비-2에서 실기기 빌드로 확인한 뒤** 정합니다.
+**7번 확인 결과 (2026-11-07 갱신).** Expo 기본 템플릿에서 남은 공통 권한 5개는 `65c4e61`에서 정리함.
+`android/app/src/main/AndroidManifest.xml`은 NFC만 선언하고 `src/debug/AndroidManifest.xml`은 Metro/개발 도구용 INTERNET·SYSTEM_ALERT_WINDOW를 유지함.
+최종 release 패키지 매니페스트: NFC + AndroidX의 `com.palyuksa.palyuksa.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`(signature).
+최종 debug 패키지 매니페스트·APK: 위 권한 + INTERNET·SYSTEM_ALERT_WINDOW. 저장소·진동 권한 없음.
+`scripts/check-android-permissions.py`의 실제 산출물 검사 PASS 및 폰 실제 읽기·쓰기·재읽기·시간 초과 후 재시도 정상 확인.
+`android/` 재생성·의존성 변경 없음. release APK의 실제 실행과 iOS는 이번 확인에 포함하지 않음.
 
 > **참고.** 2026-09-20 기준 `npm run typecheck` = **에러 0건**(`strict: true`)이며,
 > 사용자가 실기기에 설치해 기본 읽기·쓰기 동작을 확인했습니다.
-> 2026-10-02: 1·3번 Android 실측 완료, 병합 후 사용자 확인 완료. 나머지는 미확인입니다.
+> 2026-10-02: 1·3번 Android 실측 완료, 병합 후 사용자 확인 완료. 7번은 2026-11-07 준비-2 실기기 확인으로 완료. 나머지는 미확인입니다.
 > iOS 1-2와 추적 파라미터 재작성(8번)을 확인 완료로 간주하지 않습니다.
 
 ---
